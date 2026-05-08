@@ -1,4 +1,4 @@
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { MarkdownText } from "./markdown.js";
 import type { UiBlock } from "./types.js";
 
@@ -17,6 +17,9 @@ function relativizeCwd(s: string): string {
   if (!s.includes(CWD_PREFIX)) return s;
   return s.split(CWD_PREFIX).join("");
 }
+
+/** Background color for user-prompt highlights — subtle, dark-theme-tuned. */
+const USER_PROMPT_BG = "#f1f1f1";
 
 export function BlockList({
   blocks,
@@ -187,14 +190,22 @@ function readOutputLineCount(result: string): number {
 }
 
 function UserPromptBlock({ text }: { text: string }) {
-  // `›` prefix on the first line, two-space indent on continuations, dim
-  // text color. No background fill — works on any terminal background.
+  const { stdout } = useStdout();
+  const width = stdout?.columns ?? 80;
+  // Each text line: `›` prefix on the first, two-space indent on
+  // continuations. Padded with spaces to terminal width so the bg paints
+  // edge-to-edge.
   const lines = text.split("\n");
+  const rendered = lines.map((line, i) => {
+    const prefix = i === 0 ? "› " : "  ";
+    const full = prefix + line;
+    return full.length >= width ? full : full + " ".repeat(width - full.length);
+  });
   return (
     <Box marginTop={1} flexDirection="column">
-      {lines.map((line, i) => (
-        <Text key={i} color={MUTED}>
-          {(i === 0 ? "› " : "  ") + line}
+      {rendered.map((row, i) => (
+        <Text key={i} backgroundColor={USER_PROMPT_BG}>
+          {row}
         </Text>
       ))}
     </Box>
