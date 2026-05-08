@@ -9,11 +9,15 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
   cleared: { count: number };
   exited: { count: number };
   resumed: { count: number };
+  modelPicked: { count: number };
+  modelSet: { value: string | null };
 } {
   const blocks: UiBlock[] = [];
   const cleared = { count: 0 };
   const exited = { count: 0 };
   const resumed = { count: 0 };
+  const modelPicked = { count: 0 };
+  const modelSet: { value: string | null } = { value: null };
   const config: LcodeConfig = {
     llmUrl: 'http://localhost:9200',
     model: 'qwen2.5-7b-instruct',
@@ -25,13 +29,20 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
     cleared,
     exited,
     resumed,
+    modelPicked,
+    modelSet,
     ctx: {
       cwd: '/tmp/test',
       config,
       sessionId: 'abc-123',
+      currentModel: config.model,
+      setCurrentModel: (m) => {
+        modelSet.value = m;
+      },
       addBlock: (b) => blocks.push(b),
       clearSession: () => cleared.count++,
       openResumePicker: () => resumed.count++,
+      openModelPicker: () => modelPicked.count++,
       exit: () => exited.count++,
       ...overrides,
     },
@@ -113,5 +124,21 @@ describe('maybeRunSlashCommand', () => {
     const { ctx, blocks } = mkCtx();
     expect(await maybeRunSlashCommand('/', ctx)).toBe(true);
     expect(blocks).toHaveLength(0);
+  });
+
+  it('handles bare /model by showing current model and opening the picker', async () => {
+    const { ctx, blocks, modelPicked, modelSet } = mkCtx();
+    await maybeRunSlashCommand('/model', ctx);
+    expect(modelPicked.count).toBe(1);
+    expect(modelSet.value).toBeNull();
+    expect((blocks[0] as { text: string }).text).toContain('qwen2.5-7b-instruct');
+  });
+
+  it('handles /model <name> by setting the model directly', async () => {
+    const { ctx, blocks, modelPicked, modelSet } = mkCtx();
+    await maybeRunSlashCommand('/model llama-3.1-8b', ctx);
+    expect(modelSet.value).toBe('llama-3.1-8b');
+    expect(modelPicked.count).toBe(0);
+    expect((blocks[0] as { text: string }).text).toContain('llama-3.1-8b');
   });
 });

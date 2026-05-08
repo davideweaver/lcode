@@ -11,6 +11,7 @@ import { Divider } from './divider.js';
 import { getGitBranch } from './git.js';
 import { messagesToBlocks } from './replay.js';
 import { ResumePicker } from './resume-picker.js';
+import { ModelPicker } from './model-picker.js';
 import {
   getSlashQuery,
   isSlashPopupOpen,
@@ -63,6 +64,8 @@ export function App({ config, resume }: AppProps) {
   const [slashIdx, setSlashIdx] = useState(0);
   const [inputKey, setInputKey] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [currentModel, setCurrentModel] = useState(config.model);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [showThinking, setShowThinking] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -219,6 +222,8 @@ export function App({ config, resume }: AppProps) {
           cwd,
           config,
           sessionId,
+          currentModel,
+          setCurrentModel,
           addBlock: (block) => setBlocks((b) => [...b, block]),
           clearSession: () => {
             setBlocks([]);
@@ -227,6 +232,7 @@ export function App({ config, resume }: AppProps) {
             setTurnStatus({ kind: 'idle' });
           },
           openResumePicker: () => setPickerOpen(true),
+          openModelPicker: () => setModelPickerOpen(true),
           exit,
         });
         return;
@@ -245,7 +251,7 @@ export function App({ config, resume }: AppProps) {
         const stream = query({
           prompt: trimmed,
           cwd,
-          model: config.model,
+          model: currentModel,
           abortController: ctl,
           resume: sessionId,
           includePartialMessages: true,
@@ -261,7 +267,7 @@ export function App({ config, resume }: AppProps) {
         abortRef.current = null;
       }
     },
-    [busy, config, cwd, sessionId, slashIdx, claudeMdFiles, exit],
+    [busy, config, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit],
   );
 
   const headerItems = useMemo<HeaderItem[]>(() => {
@@ -304,6 +310,20 @@ export function App({ config, resume }: AppProps) {
           cwd={cwd}
           onSelect={onPickerSelect}
           onCancel={() => setPickerOpen(false)}
+        />
+      ) : modelPickerOpen ? (
+        <ModelPicker
+          config={config}
+          currentModel={currentModel}
+          onSelect={(m) => {
+            setCurrentModel(m);
+            setModelPickerOpen(false);
+            setBlocks((b) => [
+              ...b,
+              { kind: 'slash_output', text: `* model set to ${m}` },
+            ]);
+          }}
+          onCancel={() => setModelPickerOpen(false)}
         />
       ) : (
         <>

@@ -46,3 +46,19 @@ export async function probeLlm(
     };
   }
 }
+
+export async function listAvailableModels(
+  config: LcodeConfig,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const url = `${config.llmUrl.replace(/\/$/, '')}/v1/models`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${config.apiKey}` },
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} from ${url}`);
+  }
+  const body = (await res.json()) as { data?: Array<{ id: string }> };
+  return body.data?.map((m) => m.id) ?? [];
+}

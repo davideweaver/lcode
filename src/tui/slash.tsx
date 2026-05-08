@@ -6,9 +6,12 @@ export interface SlashContext {
   cwd: string;
   config: LcodeConfig;
   sessionId?: string;
+  currentModel: string;
+  setCurrentModel: (model: string) => void;
   addBlock: (block: UiBlock) => void;
   clearSession: () => void;
   openResumePicker: () => void;
+  openModelPicker: () => void;
   exit: () => void;
 }
 
@@ -47,13 +50,23 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'model',
-    description: 'Show the configured model and endpoint.',
-    execute: (_args, ctx) => {
-      const { model, llmUrl, contextWindow } = ctx.config;
+    description: 'Show the active model, or pick / set a different one.',
+    execute: (args, ctx) => {
+      const { llmUrl, contextWindow } = ctx.config;
+      const requested = args.trim();
+      if (requested) {
+        ctx.setCurrentModel(requested);
+        ctx.addBlock({
+          kind: 'slash_output',
+          text: `model: ${requested}\nendpoint: ${llmUrl}\ncontext window: ${contextWindow} tokens`,
+        });
+        return;
+      }
       ctx.addBlock({
         kind: 'slash_output',
-        text: `model: ${model}\nendpoint: ${llmUrl}\ncontext window: ${contextWindow} tokens`,
+        text: `model: ${ctx.currentModel}\nendpoint: ${llmUrl}\ncontext window: ${contextWindow} tokens`,
       });
+      ctx.openModelPicker();
     },
   },
   {
