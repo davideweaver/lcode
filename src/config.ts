@@ -10,8 +10,8 @@ export interface LcodeConfig {
 
 export function loadConfig(): LcodeConfig {
   return {
-    llmUrl: normalizeBaseUrl(process.env.LCODE_LLM_URL ?? 'http://localhost:9200'),
-    model: process.env.LCODE_MODEL ?? 'qwen2.5-7b-instruct',
+    llmUrl: normalizeBaseUrl(process.env.LCODE_LLM_URL ?? 'http://llm.appkit.local:9100/v1'),
+    model: process.env.LCODE_MODEL ?? 'gemma4',
     apiKey: process.env.LCODE_API_KEY ?? 'sk-not-needed',
     contextWindow: parseInt(process.env.LCODE_CONTEXT_WINDOW ?? '32768', 10),
   };
