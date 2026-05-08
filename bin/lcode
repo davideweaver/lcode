@@ -13,14 +13,19 @@ const isDevelopment = process.env.NODE_ENV !== 'production';
 const projectRoot = path.join(__dirname, '..');
 
 if (isDevelopment) {
-  // Development: use tsx to run TypeScript directly
+  // Development: use tsx to run TypeScript directly. Pass an absolute
+  // --tsconfig path so tsx honors the project's JSX runtime setting
+  // regardless of the user's invocation directory; do NOT set spawn cwd
+  // so the child inherits the user's shell cwd.
   const tsxPath = path.join(projectRoot, 'node_modules', '.bin', 'tsx');
   const cliPath = path.join(projectRoot, 'bin', 'lc.ts');
+  const tsconfigPath = path.join(projectRoot, 'tsconfig.json');
 
-  const child = spawn(tsxPath, [cliPath, ...process.argv.slice(2)], {
-    stdio: 'inherit',
-    cwd: projectRoot,
-  });
+  const child = spawn(
+    tsxPath,
+    ['--tsconfig', tsconfigPath, cliPath, ...process.argv.slice(2)],
+    { stdio: 'inherit' },
+  );
 
   child.on('exit', (code) => process.exit(code || 0));
 } else {
