@@ -61,6 +61,7 @@ function buildToolGuidance(tools: Tool[]): string {
     '- You **must** Read a file before Edit-ing or Write-ing over it.',
     '- For Edit, make `old_string` unique by including surrounding context, or set `replace_all: true`.',
     '- For Bash, prefer dedicated tools (Read/Write/Edit/Glob/Grep) when one fits. Reserve Bash for actual shell work.',
+    '- For the web: use **WebSearch** to find URLs, **WebFetch** to read a specific page. Do not guess URLs.',
     '- When you have everything you need, stop calling tools and answer the user.',
   );
   return lines.join('\n');

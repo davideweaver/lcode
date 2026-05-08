@@ -49,6 +49,7 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     model: options.model ?? options.config?.model ?? baseConfig.model,
     apiKey: options.config?.apiKey ?? baseConfig.apiKey,
     contextWindow: options.config?.contextWindow ?? baseConfig.contextWindow,
+    searxngUrl: options.config?.searxngUrl ?? baseConfig.searxngUrl,
   };
 
   const cwd = options.cwd ?? process.cwd();
@@ -82,6 +83,7 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     permissionMode: options.permissionMode,
     sessionState: replayedSessionState,
     claudeMdFiles,
+    searxngUrl: config.searxngUrl,
   });
 
   for await (const msg of generator) {

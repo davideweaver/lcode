@@ -4,6 +4,8 @@ import { EditTool } from './edit.js';
 import { GlobTool } from './glob.js';
 import { GrepTool } from './grep.js';
 import { ReadTool } from './read.js';
+import { WebFetchTool } from './web-fetch.js';
+import { WebSearchTool } from './web-search.js';
 import { WriteTool } from './write.js';
 
 export const BUILTIN_TOOLS: Tool[] = [
@@ -13,6 +15,17 @@ export const BUILTIN_TOOLS: Tool[] = [
   GlobTool,
   GrepTool,
   BashTool,
+  WebFetchTool,
+  WebSearchTool,
 ];
 
-export { BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool };
+export {
+  BashTool,
+  EditTool,
+  GlobTool,
+  GrepTool,
+  ReadTool,
+  WebFetchTool,
+  WebSearchTool,
+  WriteTool,
+};

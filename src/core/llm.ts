@@ -260,6 +260,47 @@ export async function* streamLlm(
   return { content, stop_reason: stopReason, usage };
 }
 
+/**
+ * One-shot non-streaming completion. Drives streamLlm with no tools and
+ * returns the concatenated assistant text. Used by tools (e.g. WebFetch)
+ * that need a side-channel LLM call without re-entering the agent loop.
+ */
+export async function runCompletion(args: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  userPrompt: string;
+  signal: AbortSignal;
+  temperature?: number;
+}): Promise<string> {
+  const messages: AnthropicMessage[] = [
+    { role: 'user', content: [{ type: 'text', text: args.userPrompt }] },
+  ];
+  const gen = streamLlm({
+    baseUrl: args.baseUrl,
+    apiKey: args.apiKey,
+    model: args.model,
+    systemPrompt: args.systemPrompt,
+    messages,
+    tools: [],
+    signal: args.signal,
+    temperature: args.temperature,
+  });
+  let final: LlmFinalMessage | undefined;
+  while (true) {
+    const next = await gen.next();
+    if (next.done) {
+      final = next.value;
+      break;
+    }
+  }
+  return final.content
+    .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+    .map((b) => b.text)
+    .join('');
+}
+
 function mapFinishReason(reason: string): LlmFinalMessage['stop_reason'] {
   switch (reason) {
     case 'stop':

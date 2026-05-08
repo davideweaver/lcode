@@ -6,6 +6,11 @@ export interface LcodeConfig {
   apiKey: string;
   /** Context window in tokens. Used to compute the statusline percentage. */
   contextWindow: number;
+  /**
+   * SearXNG base URL used by the WebSearch tool. Empty string disables
+   * WebSearch — the tool errors with a setup hint when invoked.
+   */
+  searxngUrl: string;
 }
 
 export function loadConfig(): LcodeConfig {
@@ -14,6 +19,7 @@ export function loadConfig(): LcodeConfig {
     model: process.env.LCODE_MODEL ?? 'gemma4',
     apiKey: process.env.LCODE_API_KEY ?? 'sk-not-needed',
     contextWindow: parseInt(process.env.LCODE_CONTEXT_WINDOW ?? '32768', 10),
+    searxngUrl: (process.env.LCODE_SEARXNG_URL ?? '').replace(/\/+$/, ''),
   };
 }
 

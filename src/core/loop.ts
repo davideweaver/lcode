@@ -10,7 +10,7 @@ import type {
   ToolUseBlock,
 } from './messages.js';
 import { textBlock, toolResultBlock } from './messages.js';
-import { streamLlm, type LlmFinalMessage } from './llm.js';
+import { runCompletion, streamLlm, type LlmFinalMessage } from './llm.js';
 import { newSessionState, type SessionState, type Tool } from '../tools/types.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -32,6 +32,8 @@ export interface LoopArgs {
   permissionMode?: string;
   sessionState?: SessionState;
   claudeMdFiles?: ClaudeMdFile[];
+  /** Surfaced into ToolContext for WebSearch. */
+  searxngUrl?: string;
 }
 
 export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
@@ -184,6 +186,16 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
           cwd: args.cwd,
           signal: args.signal,
           sessionState,
+          searxngUrl: args.searxngUrl,
+          runCompletion: ({ systemPrompt = '', userPrompt, signal }) =>
+            runCompletion({
+              baseUrl: args.baseUrl,
+              apiKey: args.apiKey,
+              model: args.model,
+              systemPrompt,
+              userPrompt,
+              signal: signal ?? args.signal,
+            }),
         });
         return toolResultBlock(tu.id, result.content, result.isError ?? false);
       } catch (err) {

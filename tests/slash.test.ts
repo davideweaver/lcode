@@ -23,6 +23,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
     model: 'qwen2.5-7b-instruct',
     apiKey: 'sk-not-needed',
     contextWindow: 32_768,
+    searxngUrl: '',
   };
   return {
     blocks,

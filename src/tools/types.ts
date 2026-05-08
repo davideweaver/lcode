@@ -4,6 +4,19 @@ export interface ToolContext {
   cwd: string;
   signal: AbortSignal;
   sessionState: SessionState;
+  /**
+   * Run a one-shot non-streaming LLM completion using lcode's configured
+   * model. Used by tools (e.g. WebFetch) that need a side-channel call
+   * without re-entering the agent loop. Undefined when caller doesn't
+   * wire it (e.g. some tests or out-of-loop tool dispatch).
+   */
+  runCompletion?: (req: {
+    systemPrompt?: string;
+    userPrompt: string;
+    signal?: AbortSignal;
+  }) => Promise<string>;
+  /** SearXNG base URL for WebSearch. Empty/undefined disables the tool. */
+  searxngUrl?: string;
 }
 
 /**
