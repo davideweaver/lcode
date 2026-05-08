@@ -19,7 +19,7 @@ export function loadConfig(): LcodeConfig {
     model: process.env.LCODE_MODEL ?? 'gemma4',
     apiKey: process.env.LCODE_API_KEY ?? 'sk-not-needed',
     contextWindow: parseInt(process.env.LCODE_CONTEXT_WINDOW ?? '32768', 10),
-    searxngUrl: (process.env.LCODE_SEARXNG_URL ?? '').replace(/\/+$/, ''),
+    searxngUrl: (process.env.LCODE_SEARXNG_URL ?? 'http://172.16.0.14:3274').replace(/\/+$/, ''),
   };
 }
 
