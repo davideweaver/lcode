@@ -30,8 +30,12 @@ export function renderBanner(config: LcodeConfig, cwd: string): string {
         ? '~' + cwd.slice(home.length)
         : cwd;
 
+  const themeLabel = (process.env.LCODE_THEME ?? 'unset').toLowerCase();
+
   const line1 = `${bold('lcode')} ${dim(`v${VERSION}`)}`;
-  const line2 = gray(`${config.model} (${ctx} context) · ${config.llmUrl}`);
+  const line2 = gray(
+    `${config.model} (${ctx} context) · ${config.llmUrl} · theme: ${themeLabel}`,
+  );
   const line3 = gray(displayPath);
 
   return [line1, line2, line3].join('\n');

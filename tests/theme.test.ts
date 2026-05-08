@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error — JS ESM helper, no .d.ts ships with it
-import { parseColorFgBg, parseOsc11Response } from '../bin/theme-helpers.mjs';
+import { parseColorFgBg, parseOsc11Response } from '../src/tui/theme-detect.js';
 import { darkTheme, getTheme, lightTheme, resolveThemeName } from '../src/tui/theme.js';
 
 describe('parseColorFgBg', () => {
