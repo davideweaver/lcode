@@ -145,7 +145,7 @@ export function SlashPopup({
   if (matches.length === 0) {
     return (
       <Box paddingX={1}>
-        <Text dimColor>no matching command</Text>
+        <Text color="gray">no matching command</Text>
       </Box>
     );
   }
@@ -164,12 +164,12 @@ export function SlashPopup({
             <Text color={selected ? 'cyan' : undefined} bold={selected}>
               {name}
             </Text>
-            <Text dimColor> {c.description}</Text>
+            <Text color="gray"> {c.description}</Text>
           </Text>
         );
       })}
       {more > 0 && (
-        <Text dimColor>  …{more} more</Text>
+        <Text color="gray">  …{more} more</Text>
       )}
     </Box>
   );

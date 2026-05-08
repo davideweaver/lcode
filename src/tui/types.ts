@@ -2,6 +2,13 @@ export type UiBlock =
   | { kind: 'user_prompt'; text: string }
   | { kind: 'assistant_text'; text: string; streaming: boolean }
   | {
+      kind: 'thinking';
+      text: string;
+      streaming: boolean;
+      startedAt: number;
+      durationMs?: number;
+    }
+  | {
       kind: 'tool_call';
       id: string;
       name: string;

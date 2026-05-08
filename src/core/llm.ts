@@ -6,6 +6,8 @@ import type {
   Usage,
 } from './messages.js';
 import type { Tool } from '../tools/types.js';
+import { ThinkingStreamParser } from './thinking-parser.js';
+import { HarmonyNoiseFilter } from './harmony-filter.js';
 
 export interface LlmStreamArgs {
   baseUrl: string;
@@ -33,6 +35,12 @@ interface OpenAIToolCallAccum {
 
 interface OpenAIDelta {
   content?: string;
+  /**
+   * llama.cpp / OpenAI-o1-style "reasoning" channel. When the server splits
+   * thinking out of `content` (e.g. for Qwen3 with `enable_thinking`), it
+   * arrives here. Treated as a thinking block.
+   */
+  reasoning_content?: string;
   role?: string;
   tool_calls?: Array<{
     index: number;
@@ -69,6 +77,9 @@ export async function* streamLlm(
     messages: anthropicToOpenAI(args.systemPrompt, args.messages),
     tools: args.tools.length > 0 ? toOpenAITools(args.tools) : undefined,
     tool_choice: args.tools.length > 0 ? 'auto' : undefined,
+    // Hint to llama.cpp / Qwen3-style chat templates: produce reasoning when
+    // the model supports it. Servers that don't recognize this field ignore it.
+    chat_template_kwargs: { enable_thinking: true },
   };
   const res = await fetch(url, {
     method: 'POST',
@@ -85,6 +96,11 @@ export async function* streamLlm(
   }
 
   let textAccum = '';
+  const thinkingBlocks: string[] = [];
+  let currentThinking: string | null = null;
+  let reasoningChannelOpen = false;
+  const noise = new HarmonyNoiseFilter();
+  const parser = new ThinkingStreamParser();
   const toolCalls = new Map<number, OpenAIToolCallAccum>();
   let stopReason: LlmFinalMessage['stop_reason'] = null;
   let usage: Usage | undefined;
@@ -100,9 +116,52 @@ export async function* streamLlm(
     if (!choice) continue;
 
     const delta = choice.delta;
+
+    // 1. Server-side reasoning channel (llama.cpp / o1 style). Open a
+    //    thinking block on first reasoning_content, append deltas, close
+    //    when content (or stream end) signals reasoning is finished.
+    if (delta?.reasoning_content) {
+      if (!reasoningChannelOpen) {
+        reasoningChannelOpen = true;
+        currentThinking = '';
+        yield { kind: 'thinking_start' };
+      }
+      currentThinking = (currentThinking ?? '') + delta.reasoning_content;
+      yield { kind: 'thinking_delta', text: delta.reasoning_content };
+    }
+
+    // 2. content arriving while reasoning channel is open ⇒ reasoning ended.
+    if (delta?.content && reasoningChannelOpen) {
+      if (currentThinking !== null) thinkingBlocks.push(currentThinking);
+      currentThinking = null;
+      reasoningChannelOpen = false;
+      yield { kind: 'thinking_stop' };
+    }
+
+    // 3. content channel — first strip Harmony channel markers (e.g.
+    //    `<|channel|>thought<|message|>`) that some quants leak as plain
+    //    text, then feed through the inline <think> parser as a fallback
+    //    for models that emit reasoning tags directly in content.
     if (delta?.content) {
-      textAccum += delta.content;
-      yield { kind: 'text_delta', text: delta.content };
+      const cleaned = noise.feed(delta.content);
+      if (cleaned) {
+        for (const ev of parser.feed(cleaned)) {
+          if (ev.kind === 'text_delta') {
+            textAccum += ev.text;
+            yield ev;
+          } else if (ev.kind === 'thinking_start') {
+            currentThinking = '';
+            yield ev;
+          } else if (ev.kind === 'thinking_delta') {
+            if (currentThinking !== null) currentThinking += ev.text;
+            yield ev;
+          } else if (ev.kind === 'thinking_stop') {
+            if (currentThinking !== null) thinkingBlocks.push(currentThinking);
+            currentThinking = null;
+            yield ev;
+          }
+        }
+      }
     }
     if (delta?.tool_calls) {
       for (const tc of delta.tool_calls) {
@@ -142,7 +201,49 @@ export async function* streamLlm(
     yield { kind: 'tool_use_stop', id: acc.id };
   }
 
+  // If the stream ended while reasoning_content was still flowing (no
+  // content ever arrived to close it), finalize the block now.
+  if (reasoningChannelOpen) {
+    if (currentThinking !== null) thinkingBlocks.push(currentThinking);
+    currentThinking = null;
+    reasoningChannelOpen = false;
+    yield { kind: 'thinking_stop' };
+  }
+
+  // Flush the harmony filter's hold-back tail through the think parser.
+  const tail = noise.flush();
+  if (tail) {
+    for (const ev of parser.feed(tail)) {
+      if (ev.kind === 'text_delta') {
+        textAccum += ev.text;
+      } else if (ev.kind === 'thinking_delta') {
+        if (currentThinking !== null) currentThinking += ev.text;
+      } else if (ev.kind === 'thinking_stop') {
+        if (currentThinking !== null) thinkingBlocks.push(currentThinking);
+        currentThinking = null;
+      }
+      yield ev;
+    }
+  }
+
+  // End-of-stream flush for the inline <think> parser (in case content
+  // ended mid-tag).
+  for (const ev of parser.flush()) {
+    if (ev.kind === 'text_delta') {
+      textAccum += ev.text;
+    } else if (ev.kind === 'thinking_delta') {
+      if (currentThinking !== null) currentThinking += ev.text;
+    } else if (ev.kind === 'thinking_stop') {
+      if (currentThinking !== null) thinkingBlocks.push(currentThinking);
+      currentThinking = null;
+    }
+    yield ev;
+  }
+
   const content: ContentBlock[] = [];
+  // Thinking goes first — Qwen-style models reason then respond, and
+  // putting these blocks first preserves that order in the assistant message.
+  for (const t of thinkingBlocks) content.push({ type: 'thinking', thinking: t });
   if (textAccum) content.push({ type: 'text', text: textAccum });
   for (const acc of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
     let parsed: Record<string, unknown> = {};
@@ -197,10 +298,18 @@ export function anthropicToOpenAI(
       continue;
     }
     if (msg.role === 'assistant') {
-      const text = msg.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('');
+      // Round-trip thinking back to the model in its native <think> form so
+      // it can rebuild reasoning context — matches Anthropic's persistence
+      // behavior for thinking blocks.
+      const parts: string[] = [];
+      for (const block of msg.content) {
+        if (block.type === 'thinking') {
+          parts.push(`<think>${block.thinking}</think>`);
+        } else if (block.type === 'text') {
+          parts.push(block.text);
+        }
+      }
+      const text = parts.join('');
       const toolCalls = msg.content
         .filter((b): b is { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> } => b.type === 'tool_use')
         .map((b) => ({

@@ -83,6 +83,9 @@ export interface SDKUserMessage {
 
 export type PartialAssistantEvent =
   | { kind: 'text_delta'; text: string }
+  | { kind: 'thinking_start' }
+  | { kind: 'thinking_delta'; text: string }
+  | { kind: 'thinking_stop' }
   | { kind: 'tool_use_start'; id: string; name: string }
   | { kind: 'tool_use_input_delta'; id: string; partialJson: string }
   | { kind: 'tool_use_stop'; id: string };

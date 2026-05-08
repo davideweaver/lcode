@@ -64,7 +64,12 @@ export function App({ config, resume }: AppProps) {
   const [inputKey, setInputKey] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
+  const [showThinking, setShowThinking] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // ink-text-input doesn't filter ctrl+letter combos, so the literal letter
+  // would land in the input value. We set this flag in our useInput handler
+  // before TextInput's handler runs; the next onChange consumes it.
+  const swallowInputChange = useRef(false);
 
   /**
    * Replace the input value externally and remount TextInput so the cursor
@@ -76,6 +81,14 @@ export function App({ config, resume }: AppProps) {
   const replaceInput = useCallback((next: string) => {
     setInput(next);
     setInputKey((k) => k + 1);
+  }, []);
+
+  const handleInputChange = useCallback((next: string) => {
+    if (swallowInputChange.current) {
+      swallowInputChange.current = false;
+      return;
+    }
+    setInput(next);
   }, []);
 
   const onPickerSelect = useCallback(
@@ -140,6 +153,16 @@ export function App({ config, resume }: AppProps) {
       if (key.ctrl && inputChar === 'c') {
         abortRef.current?.abort();
         exit();
+        return;
+      }
+      if (key.ctrl && inputChar === 'o') {
+        swallowInputChange.current = true;
+        // Clear at end of tick so a future stray keystroke isn't dropped
+        // (e.g. on terminals that don't emit a literal "o" for ctrl+o).
+        queueMicrotask(() => {
+          swallowInputChange.current = false;
+        });
+        setShowThinking((s) => !s);
         return;
       }
       if (key.escape) {
@@ -246,22 +269,19 @@ export function App({ config, resume }: AppProps) {
   }, [health]);
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column">
       <Static items={headerItems}>
         {(item, i) => (
-          <Box key={i} paddingX={1}>
+          <Box key={i}>
             <HealthLine health={item.health} configuredModel={config.model} />
           </Box>
         )}
       </Static>
 
-      <Static items={blocks.filter((_, i) => i < blocks.length - 1)}>
-        {(block, i) => <BlockListItem key={i} block={block} />}
-      </Static>
-      {blocks.length > 0 && <BlockListItem block={blocks[blocks.length - 1]!} />}
+      <BlockList blocks={blocks} showThinking={showThinking} />
 
       {turnStatus.kind !== 'idle' && (
-        <Box marginTop={1} paddingX={1}>
+        <Box marginTop={1}>
           {turnStatus.kind === 'working' ? (
             <Text color="yellow">
               <Text>{tick % 2 === 0 ? '*' : ' '}</Text>
@@ -287,14 +307,14 @@ export function App({ config, resume }: AppProps) {
         />
       ) : (
         <>
-          <Box paddingX={1}>
+          <Box>
             {process.stdin.isTTY ? (
               <Box>
                 <Text color={busy ? 'gray' : 'cyan'}>› </Text>
                 <TextInput
                   key={inputKey}
                   value={input}
-                  onChange={setInput}
+                  onChange={handleInputChange}
                   onSubmit={onSubmit}
                   focus={!busy}
                 />
@@ -315,6 +335,7 @@ export function App({ config, resume }: AppProps) {
               tokensUsed={tokensUsed}
               contextWindow={config.contextWindow}
               sessionId={sessionId}
+              showThinking={showThinking}
             />
           )}
         </>
@@ -323,8 +344,14 @@ export function App({ config, resume }: AppProps) {
   );
 }
 
-function BlockListItem({ block }: { block: UiBlock }) {
-  return <BlockList blocks={[block]} />;
+function BlockListItem({
+  block,
+  showThinking,
+}: {
+  block: UiBlock;
+  showThinking: boolean;
+}) {
+  return <BlockList blocks={[block]} showThinking={showThinking} />;
 }
 
 async function drainStream(
@@ -345,9 +372,24 @@ async function drainStream(
         const ev = msg.event;
         if (ev.kind === 'text_delta') {
           setBlocks((b) => appendTextDelta(b, ev.text));
+        } else if (ev.kind === 'thinking_start') {
+          setBlocks((b) => [
+            ...finalizeStreamingText(b),
+            {
+              kind: 'thinking',
+              text: '',
+              streaming: true,
+              startedAt: Date.now(),
+            },
+          ]);
+        } else if (ev.kind === 'thinking_delta') {
+          setBlocks((b) => appendThinkingDelta(b, ev.text));
+        } else if (ev.kind === 'thinking_stop') {
+          setBlocks((b) => finalizeStreamingThinking(b));
         } else if (ev.kind === 'tool_use_start') {
           setBlocks((b) => [
             ...finalizeStreamingText(b),
+            ...[],
             {
               kind: 'tool_call',
               id: ev.id,
@@ -395,6 +437,25 @@ function finalizeStreamingText(blocks: UiBlock[]): UiBlock[] {
   return blocks.map((b) =>
     b.kind === 'assistant_text' && b.streaming ? { ...b, streaming: false } : b,
   );
+}
+
+function appendThinkingDelta(blocks: UiBlock[], text: string): UiBlock[] {
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === 'thinking' && last.streaming) {
+    return [...blocks.slice(0, -1), { ...last, text: last.text + text }];
+  }
+  // No active thinking block (shouldn't normally happen, but be defensive).
+  return [
+    ...blocks,
+    { kind: 'thinking', text, streaming: true, startedAt: Date.now() },
+  ];
+}
+
+function finalizeStreamingThinking(blocks: UiBlock[]): UiBlock[] {
+  return blocks.map((b) => {
+    if (b.kind !== 'thinking' || !b.streaming) return b;
+    return { ...b, streaming: false, durationMs: Date.now() - b.startedAt };
+  });
 }
 
 function reconcileToolInputs(

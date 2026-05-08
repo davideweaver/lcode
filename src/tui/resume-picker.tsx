@@ -51,22 +51,22 @@ export function ResumePicker({ cwd, onSelect, onCancel }: ResumePickerProps) {
     return (
       <Box flexDirection="column" paddingX={1}>
         <Text color="red">Failed to list sessions: {error}</Text>
-        <Text dimColor>Press Esc to dismiss.</Text>
+        <Text color="gray">Press Esc to dismiss.</Text>
       </Box>
     );
   }
   if (sessions === null) {
     return (
       <Box paddingX={1}>
-        <Text dimColor>loading sessions…</Text>
+        <Text color="gray">loading sessions…</Text>
       </Box>
     );
   }
   if (sessions.length === 0) {
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text dimColor>No saved sessions in this directory yet.</Text>
-        <Text dimColor>Press Esc to dismiss.</Text>
+        <Text color="gray">No saved sessions in this directory yet.</Text>
+        <Text color="gray">Press Esc to dismiss.</Text>
       </Box>
     );
   }
@@ -81,7 +81,7 @@ export function ResumePicker({ cwd, onSelect, onCancel }: ResumePickerProps) {
         <Text bold color="cyan">
           Resume Session ({selectedIdx + 1} of {sessions.length})
         </Text>
-        <Text dimColor>   ↑↓ navigate · enter to resume · esc to cancel</Text>
+        <Text color="gray">   ↑↓ navigate · enter to resume · esc to cancel</Text>
       </Box>
       <Divider />
       {visible.map((s, i) => {
@@ -96,7 +96,7 @@ export function ResumePicker({ cwd, onSelect, onCancel }: ResumePickerProps) {
               </Text>
             </Text>
             <Text>
-              <Text dimColor>
+              <Text color="gray">
                 {'    '}
                 {relativeTime(s.modifiedMs)} · {s.turns} turn
                 {s.turns === 1 ? '' : 's'} · {formatBytes(s.sizeBytes)} · {s.sessionId.slice(0, 8)}
@@ -107,7 +107,7 @@ export function ResumePicker({ cwd, onSelect, onCancel }: ResumePickerProps) {
       })}
       {pageStart + visible.length < sessions.length && (
         <Box marginTop={1}>
-          <Text dimColor>  …{sessions.length - pageStart - visible.length} more below</Text>
+          <Text color="gray">  …{sessions.length - pageStart - visible.length} more below</Text>
         </Box>
       )}
     </Box>

@@ -17,6 +17,14 @@ export function messagesToBlocks(messages: SDKMessage[]): UiBlock[] {
       for (const block of msg.message.content) {
         if (block.type === 'text') {
           blocks.push({ kind: 'assistant_text', text: block.text, streaming: false });
+        } else if (block.type === 'thinking') {
+          blocks.push({
+            kind: 'thinking',
+            text: block.thinking,
+            streaming: false,
+            startedAt: 0, // not tracked across sessions
+            durationMs: 0,
+          });
         } else if (block.type === 'tool_use') {
           blocks.push({
             kind: 'tool_call',

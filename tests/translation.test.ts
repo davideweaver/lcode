@@ -69,4 +69,23 @@ describe('anthropicToOpenAI', () => {
     expect(out[0]).toMatchObject({ role: 'assistant', content: null });
     expect(out[0]).toHaveProperty('tool_calls');
   });
+
+  it('rewraps thinking blocks as <think>…</think> when sending back', () => {
+    const messages: AnthropicMessage[] = [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'I should call Read first' },
+          { type: 'text', text: "Reading the file." },
+          { type: 'tool_use', id: 'c1', name: 'Read', input: { file_path: '/x' } },
+        ],
+      },
+    ];
+    const out = anthropicToOpenAI('', messages);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toBe(
+      '<think>I should call Read first</think>Reading the file.',
+    );
+    expect(out[0]).toHaveProperty('tool_calls');
+  });
 });
