@@ -13,6 +13,14 @@ const __dirname = path.dirname(__filename);
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const projectRoot = path.join(__dirname, '..');
 
+// Diagnostic flag: run detection only, print raw bytes + parsed result, exit.
+if (process.argv.slice(2).includes('--detect-theme')) {
+  process.env.LCODE_THEME_DEBUG = '1';
+  const result = await detectTheme();
+  console.log('\n→ resolved theme:', result);
+  process.exit(0);
+}
+
 const theme = await detectTheme();
 const childEnv = { ...process.env, LCODE_THEME: theme };
 
@@ -42,23 +50,44 @@ if (isDevelopment) {
   });
 }
 
+// Function declaration so it's hoisted — detectTheme() runs at top level
+// before const initializers further down would be reached.
+function dlog(...a) {
+  if (process.env.LCODE_THEME_DEBUG === '1') console.error('[theme]', ...a);
+}
+
 /**
  * Resolve the terminal theme: explicit override → COLORFGBG → OSC 11 →
  * default 'dark'. Done before Ink takes over stdin so OSC 11 has a clean
- * channel.
+ * channel. Set LCODE_THEME_DEBUG=1 to log decisions to stderr.
  */
 async function detectTheme() {
   const override = (process.env.LCODE_THEME ?? '').toLowerCase();
-  if (override === 'dark' || override === 'light') return override;
-
-  const fromEnv = parseColorFgBg(process.env.COLORFGBG);
-  if (fromEnv) return fromEnv;
-
-  if (process.stdin.isTTY && process.stdout.isTTY) {
-    const fromOsc = await queryOsc11(150);
-    if (fromOsc) return fromOsc;
+  if (override === 'dark' || override === 'light') {
+    dlog('using LCODE_THEME override:', override);
+    return override;
   }
 
+  dlog('TERM_PROGRAM=', process.env.TERM_PROGRAM, 'TERM=', process.env.TERM, 'COLORFGBG=', process.env.COLORFGBG);
+
+  const fromEnv = parseColorFgBg(process.env.COLORFGBG);
+  if (fromEnv) {
+    dlog('resolved from COLORFGBG:', fromEnv);
+    return fromEnv;
+  }
+
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    const fromOsc = await queryOsc11(500);
+    if (fromOsc) {
+      dlog('resolved from OSC 11:', fromOsc);
+      return fromOsc;
+    }
+    dlog('OSC 11 query did not yield a usable answer');
+  } else {
+    dlog('no TTY on stdin/stdout; skipping OSC 11');
+  }
+
+  dlog('falling back to default: dark');
   return 'dark';
 }
 
@@ -95,7 +124,9 @@ function queryOsc11(timeoutMs) {
     };
 
     const onData = (chunk) => {
-      buf += chunk.toString('utf8');
+      const incoming = chunk.toString('utf8');
+      buf += incoming;
+      dlog('OSC 11 chunk:', JSON.stringify(incoming));
       const parsed = parseOsc11Response(buf);
       if (parsed) cleanup(parsed);
     };
@@ -109,6 +140,9 @@ function queryOsc11(timeoutMs) {
     stdin.resume();
     stdin.on('data', onData);
     stdout.write('\x1b]11;?\x07');
-    const timer = setTimeout(() => cleanup(null), timeoutMs);
+    const timer = setTimeout(() => {
+      dlog('OSC 11 timed out after', timeoutMs, 'ms; buffer:', JSON.stringify(buf));
+      cleanup(null);
+    }, timeoutMs);
   });
 }
