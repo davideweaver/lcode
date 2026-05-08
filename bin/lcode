@@ -5,12 +5,16 @@
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
+import { parseColorFgBg, parseOsc11Response } from './theme-helpers.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const projectRoot = path.join(__dirname, '..');
+
+const theme = await detectTheme();
+const childEnv = { ...process.env, LCODE_THEME: theme };
 
 if (isDevelopment) {
   // Development: use tsx to run TypeScript directly. Pass an absolute
@@ -24,15 +28,87 @@ if (isDevelopment) {
   const child = spawn(
     tsxPath,
     ['--tsconfig', tsconfigPath, cliPath, ...process.argv.slice(2)],
-    { stdio: 'inherit' },
+    { stdio: 'inherit', env: childEnv },
   );
 
   child.on('exit', (code) => process.exit(code || 0));
 } else {
   // Production: run compiled JavaScript
   // Note: In ESM, we use dynamic import() instead of require()
+  process.env.LCODE_THEME = theme;
   import(path.join(projectRoot, 'dist', 'bin', 'lc.js')).catch((err) => {
     console.error(err);
     process.exit(1);
+  });
+}
+
+/**
+ * Resolve the terminal theme: explicit override → COLORFGBG → OSC 11 →
+ * default 'dark'. Done before Ink takes over stdin so OSC 11 has a clean
+ * channel.
+ */
+async function detectTheme() {
+  const override = (process.env.LCODE_THEME ?? '').toLowerCase();
+  if (override === 'dark' || override === 'light') return override;
+
+  const fromEnv = parseColorFgBg(process.env.COLORFGBG);
+  if (fromEnv) return fromEnv;
+
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    const fromOsc = await queryOsc11(150);
+    if (fromOsc) return fromOsc;
+  }
+
+  return 'dark';
+}
+
+/**
+ * Write OSC 11 to stdout and read the terminal's reply from stdin.
+ * Resolves to 'dark' / 'light' / null. Resets stdin's raw mode no matter
+ * how it exits, so the user's shell isn't left in a weird state.
+ */
+function queryOsc11(timeoutMs) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    if (!stdin.isTTY || !stdout.isTTY || typeof stdin.setRawMode !== 'function') {
+      resolve(null);
+      return;
+    }
+
+    const wasRaw = stdin.isRaw;
+    let buf = '';
+    let settled = false;
+
+    const cleanup = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stdin.off('data', onData);
+      try {
+        stdin.setRawMode(wasRaw);
+      } catch {
+        /* ignore — stdin may already be closed */
+      }
+      stdin.pause();
+      resolve(result);
+    };
+
+    const onData = (chunk) => {
+      buf += chunk.toString('utf8');
+      const parsed = parseOsc11Response(buf);
+      if (parsed) cleanup(parsed);
+    };
+
+    try {
+      stdin.setRawMode(true);
+    } catch {
+      resolve(null);
+      return;
+    }
+    stdin.resume();
+    stdin.on('data', onData);
+    stdout.write('\x1b]11;?\x07');
+    const timer = setTimeout(() => cleanup(null), timeoutMs);
   });
 }

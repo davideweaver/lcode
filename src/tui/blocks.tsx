@@ -1,6 +1,9 @@
 import { Box, Text, useStdout } from "ink";
 import { MarkdownText } from "./markdown.js";
+import { getTheme } from "./theme.js";
 import type { UiBlock } from "./types.js";
+
+const theme = getTheme();
 
 /**
  * Slightly darker than ANSI dim — readable on dark themes without
@@ -17,9 +20,6 @@ function relativizeCwd(s: string): string {
   if (!s.includes(CWD_PREFIX)) return s;
   return s.split(CWD_PREFIX).join("");
 }
-
-/** Background color for user-prompt highlights — subtle, dark-theme-tuned. */
-const USER_PROMPT_BG = "#f1f1f1";
 
 export function BlockList({
   blocks,
@@ -204,7 +204,7 @@ function UserPromptBlock({ text }: { text: string }) {
   return (
     <Box marginTop={1} flexDirection="column">
       {rendered.map((row, i) => (
-        <Text key={i} backgroundColor={USER_PROMPT_BG}>
+        <Text key={i} backgroundColor={theme.userPromptBg}>
           {row}
         </Text>
       ))}
