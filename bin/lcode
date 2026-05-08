@@ -1,0 +1,33 @@
+#!/usr/bin/env node
+
+// CLI entry point - runs the TypeScript CLI directly with tsx in development
+// or the compiled JS in production
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const projectRoot = path.join(__dirname, '..');
+
+if (isDevelopment) {
+  // Development: use tsx to run TypeScript directly
+  const tsxPath = path.join(projectRoot, 'node_modules', '.bin', 'tsx');
+  const cliPath = path.join(projectRoot, 'bin', 'lc.ts');
+
+  const child = spawn(tsxPath, [cliPath, ...process.argv.slice(2)], {
+    stdio: 'inherit',
+    cwd: projectRoot,
+  });
+
+  child.on('exit', (code) => process.exit(code || 0));
+} else {
+  // Production: run compiled JavaScript
+  // Note: In ESM, we use dynamic import() instead of require()
+  import(path.join(projectRoot, 'dist', 'bin', 'lc.js')).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

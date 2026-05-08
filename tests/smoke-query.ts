@@ -11,10 +11,10 @@ async function main() {
     let readCount = 0;
     let thinkingCount = 0;
     for await (const msg of query({
-      prompt: 'What is 17 * 23? Show your work briefly then give the answer.',
+      prompt: 'what llm provider do we support?',
       cwd: process.cwd(),
       abortController: ctl,
-      maxTurns: 3,
+      maxTurns: 4,
       includePartialMessages: false,
     })) {
       if (msg.type === 'partial_assistant') continue;

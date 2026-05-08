@@ -8,6 +8,16 @@ import type { UiBlock } from "./types.js";
  */
 export const MUTED = "gray";
 
+const CWD = process.cwd();
+const CWD_PREFIX = CWD.endsWith("/") ? CWD : CWD + "/";
+
+// Display-only: rewrite absolute paths under cwd to their relative form.
+// Tool inputs/outputs sent to the model keep their absolute paths.
+function relativizeCwd(s: string): string {
+  if (!s.includes(CWD_PREFIX)) return s;
+  return s.split(CWD_PREFIX).join("");
+}
+
 /** Background color for user-prompt highlights — subtle, dark-theme-tuned. */
 const USER_PROMPT_BG = "#f1f1f1";
 
@@ -145,7 +155,7 @@ function ToolOutputBody({
   if (name === "Write") {
     return (
       <Box marginLeft={2}>
-        <Text color={MUTED}>{truncate(result, 600)}</Text>
+        <Text color={MUTED}>{relativizeCwd(truncate(result, 600))}</Text>
       </Box>
     );
   }
@@ -159,7 +169,7 @@ function ToolOutputBody({
     <Box flexDirection="column" marginLeft={2}>
       {shown.map((line, i) => (
         <Text key={i} color={MUTED}>
-          {line || " "}
+          {relativizeCwd(line) || " "}
         </Text>
       ))}
       {remaining > 0 && (
@@ -212,9 +222,12 @@ function summarizeInput(input: Record<string, unknown>): string {
 }
 
 function stringify(v: unknown): string {
-  if (typeof v === "string") return v.length > 60 ? v.slice(0, 57) + "…" : v;
+  if (typeof v === "string") {
+    const rel = relativizeCwd(v);
+    return rel.length > 60 ? rel.slice(0, 57) + "…" : rel;
+  }
   if (typeof v === "number" || typeof v === "boolean") return String(v);
-  return truncate(JSON.stringify(v), 60);
+  return truncate(relativizeCwd(JSON.stringify(v)), 60);
 }
 
 function truncate(s: string, n: number): string {
