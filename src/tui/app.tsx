@@ -562,5 +562,5 @@ function HealthLine({
       </Text>
     );
   }
-  return <Text color="green">✓ ready: {health.modelLoaded}</Text>;
+  return <Text color="green">✓ ready: {configuredModel}</Text>;
 }

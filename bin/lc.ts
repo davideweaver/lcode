@@ -19,8 +19,10 @@ program
   .command('chat', { isDefault: true })
   .description('Open the interactive TUI (default)')
   .option('--resume <sessionId>', 'Resume an existing session by id')
-  .action(async (opts: { resume?: string }) => {
+  .option('--model <model>', 'Override the configured model for this session')
+  .action(async (opts: { resume?: string; model?: string }) => {
     const config = loadConfig();
+    if (opts.model) config.model = opts.model;
     // Detect the terminal theme before Ink takes over stdin. The OSC 11
     // exchange has to finish before render() runs, so we await here. If
     // detection fails the helper resolves to 'dark'.
@@ -32,8 +34,10 @@ program
 program
   .command('health')
   .description('Probe the configured LLM endpoint and exit')
-  .action(async () => {
+  .option('--model <model>', 'Override the configured model for this probe')
+  .action(async (opts: { model?: string }) => {
     const config = loadConfig();
+    if (opts.model) config.model = opts.model;
     const result = await probeLlm(config);
     console.log(JSON.stringify({ config, result }, null, 2));
     process.exit(result.ok ? 0 : 1);
