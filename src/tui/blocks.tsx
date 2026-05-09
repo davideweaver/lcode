@@ -3,8 +3,6 @@ import { MarkdownText } from "./markdown.js";
 import { getTheme } from "./theme.js";
 import type { UiBlock } from "./types.js";
 
-const theme = getTheme();
-
 /**
  * Slightly darker than ANSI dim — readable on dark themes without
  * disappearing into the background. Used for de-emphasized text.
@@ -192,6 +190,10 @@ function readOutputLineCount(result: string): number {
 function UserPromptBlock({ text }: { text: string }) {
   const { stdout } = useStdout();
   const width = stdout?.columns ?? 80;
+  // Read theme at render time — LCODE_THEME is set by bin/lc.ts in its
+  // async action handler, which runs *after* this module is imported.
+  // Capturing at module top would freeze the wrong (default) theme.
+  const theme = getTheme();
   // Each text line: `›` prefix on the first, two-space indent on
   // continuations. Padded with spaces to terminal width so the bg paints
   // edge-to-edge.
