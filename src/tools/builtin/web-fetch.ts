@@ -45,12 +45,14 @@ export const WebFetchTool = tool(
 
     const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
     let body: string;
+    let bytesReceived: number;
     try {
-      body = await readCappedText(res, MAX_FETCH_BYTES);
+      ({ text: body, bytes: bytesReceived } = await readCappedText(res, MAX_FETCH_BYTES));
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       return { content: `Error: failed to read body of ${url}: ${msg}`, isError: true };
     }
+    const meta = `[lcode-fetch] status=${res.status} statusText=${res.statusText || 'OK'} bytes=${bytesReceived}\n`;
 
     let pageText: string;
     if (contentType.includes('html') || /^\s*<(!doctype|html)/i.test(body)) {
@@ -66,6 +68,7 @@ export const WebFetchTool = tool(
       // the caller still gets something useful instead of erroring.
       return {
         content:
+          meta +
           `# ${url}\n\n${pageText}` +
           (truncated ? `\n\n[content truncated at ${MAX_CONTENT_CHARS} chars]` : ''),
       };
@@ -89,13 +92,19 @@ export const WebFetchTool = tool(
       return { content: `Error: LLM call failed for ${url}: ${msg}`, isError: true };
     }
 
-    return { content: answer.trim() };
+    return { content: meta + answer.trim() };
   },
   { readOnly: true },
 );
 
-async function readCappedText(res: Response, maxBytes: number): Promise<string> {
-  if (!res.body) return await res.text();
+async function readCappedText(
+  res: Response,
+  maxBytes: number,
+): Promise<{ text: string; bytes: number }> {
+  if (!res.body) {
+    const text = await res.text();
+    return { text, bytes: Buffer.byteLength(text, 'utf-8') };
+  }
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let received = 0;
@@ -116,7 +125,7 @@ async function readCappedText(res: Response, maxBytes: number): Promise<string> 
     out += decoder.decode(value, { stream: true });
   }
   out += decoder.decode();
-  return out;
+  return { text: out, bytes: received };
 }
 
 /**

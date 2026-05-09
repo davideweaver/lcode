@@ -1,4 +1,5 @@
 import { Box, Text, useStdout } from "ink";
+import { useEffect, useState } from "react";
 import { MarkdownText } from "./markdown.js";
 import { getTheme } from "./theme.js";
 import type { UiBlock } from "./types.js";
@@ -86,7 +87,8 @@ function BlockView({
           : block.status === "error"
             ? "red"
             : "green";
-      const indicator = block.status === "pending" ? "…" : "●";
+      const indicator =
+        block.status === "pending" ? <BlinkingDot color={color} /> : <Text color={color}>●</Text>;
       const mcp = parseMcpName(block.name);
       if (mcp) {
         return (
@@ -101,6 +103,22 @@ function BlockView({
                 expanded={showThinking}
               />
             )}
+          </Box>
+        );
+      }
+      if (block.name === "WebFetch") {
+        const url = typeof block.input.url === "string" ? block.input.url : "";
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={color}>
+              {indicator} <Text bold>Fetch</Text>
+              <Text color={MUTED}>({url})</Text>
+            </Text>
+            <WebFetchOutput
+              status={block.status}
+              result={block.result ?? ""}
+              expanded={showThinking}
+            />
           </Box>
         );
       }
@@ -258,6 +276,77 @@ function McpToolOutput({
       )}
     </Box>
   );
+}
+
+function BlinkingDot({ color }: { color: string }) {
+  const [on, setOn] = useState(true);
+  useEffect(() => {
+    const id = setInterval(() => setOn((v) => !v), 500);
+    return () => clearInterval(id);
+  }, []);
+  return on ? <Text color={color}>●</Text> : <Text> </Text>;
+}
+
+function WebFetchOutput({
+  status,
+  result,
+  expanded,
+}: {
+  status: "pending" | "done" | "error";
+  result: string;
+  expanded: boolean;
+}) {
+  let summary: string;
+  let body = result;
+  if (status === "pending") {
+    summary = "Fetching...";
+  } else if (status === "error") {
+    const flat = result.replace(/\s+/g, " ").trim();
+    summary = flat || "Fetch failed";
+  } else {
+    const meta = parseFetchMeta(result);
+    if (meta) {
+      summary = `Received ${formatBytes(meta.bytes)} (${meta.status} ${meta.statusText})`;
+      body = meta.rest;
+    } else {
+      summary = "Fetched";
+    }
+  }
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text color={MUTED}>└ {summary}</Text>
+      {expanded && status === "done" && body.trim() !== "" && (
+        <Box flexDirection="column" marginLeft={2}>
+          {body.split("\n").map((line, i) => (
+            <Text key={i} color={MUTED}>
+              {line || " "}
+            </Text>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function parseFetchMeta(
+  result: string,
+): { status: number; statusText: string; bytes: number; rest: string } | null {
+  const nl = result.indexOf("\n");
+  const head = nl >= 0 ? result.slice(0, nl) : result;
+  const m = head.match(/^\[lcode-fetch\] status=(\d+) statusText=(\S+) bytes=(\d+)$/);
+  if (!m) return null;
+  return {
+    status: parseInt(m[1]!, 10),
+    statusText: m[2]!,
+    bytes: parseInt(m[3]!, 10),
+    rest: nl >= 0 ? result.slice(nl + 1) : "",
+  };
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n}B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 function WebSearchOutput({
