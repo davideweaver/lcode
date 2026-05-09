@@ -28,7 +28,11 @@ program
     // detection fails the helper resolves to 'dark'.
     process.env.LCODE_THEME = await detectTerminalTheme();
     process.stdout.write('\n' + renderBanner(config, process.cwd()) + '\n\n');
-    render(createElement(App, { config, resume: opts.resume }));
+    // exitOnCtrlC: false — App owns Ctrl+C handling (single press cancels
+    // the running turn, double press exits).
+    render(createElement(App, { config, resume: opts.resume }), {
+      exitOnCtrlC: false,
+    });
   });
 
 program

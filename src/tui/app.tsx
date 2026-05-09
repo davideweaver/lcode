@@ -35,7 +35,8 @@ type HeaderItem = { kind: 'health'; health: HealthResult };
 type TurnStatus =
   | { kind: 'idle' }
   | { kind: 'working'; startedAt: number }
-  | { kind: 'done'; durationMs: number };
+  | { kind: 'done'; durationMs: number }
+  | { kind: 'interrupted'; durationMs: number };
 
 function formatDuration(ms: number): string {
   const totalSec = Math.max(0, Math.round(ms / 1000));
@@ -74,6 +75,12 @@ export function App({ config, resume }: AppProps) {
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [showThinking, setShowThinking] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Set by cancelTurn() so the finally block in onSubmit can distinguish
+  // user-initiated cancellation from natural completion or hard errors.
+  const cancelledRef = useRef(false);
+  // Most recently submitted prompt — restored to the input on cancel so the
+  // user can edit and resubmit instead of retyping.
+  const lastPromptRef = useRef('');
   // One MCP manager per chat session. Created lazily on first render so we
   // can pass in discovered configs; cleaned up on unmount.
   const mcpManagerRef = useRef<McpManager | null>(null);
@@ -184,12 +191,32 @@ export function App({ config, resume }: AppProps) {
     };
   }, [cwd]);
 
+  const cancelTurn = useCallback(() => {
+    cancelledRef.current = true;
+    abortRef.current?.abort();
+  }, []);
+
   const lastEscRef = useRef<number>(0);
+  const lastCtrlCRef = useRef<number>(0);
   useInput(
     (inputChar, key) => {
       if (key.ctrl && inputChar === 'c') {
-        abortRef.current?.abort();
-        exit();
+        if (busy) {
+          // First Ctrl+C while working cancels the turn — same as ESC.
+          // Reset the double-press window so the next press doesn't kill
+          // the app immediately after.
+          cancelTurn();
+          lastCtrlCRef.current = 0;
+          return;
+        }
+        // When idle, require two presses within 500ms to exit. Prevents
+        // accidental kills from a stray Ctrl+C.
+        const now = Date.now();
+        if (now - lastCtrlCRef.current < 500) {
+          exit();
+          return;
+        }
+        lastCtrlCRef.current = now;
         return;
       }
       if (key.ctrl && inputChar === 'o') {
@@ -204,7 +231,7 @@ export function App({ config, resume }: AppProps) {
       }
       if (key.escape) {
         if (busy) {
-          abortRef.current?.abort();
+          cancelTurn();
           lastEscRef.current = 0;
           return;
         }
@@ -283,6 +310,8 @@ export function App({ config, resume }: AppProps) {
 
       const ctl = new AbortController();
       abortRef.current = ctl;
+      lastPromptRef.current = trimmed;
+      cancelledRef.current = false;
       try {
         const stream = query({
           prompt: trimmed,
@@ -297,14 +326,25 @@ export function App({ config, resume }: AppProps) {
         });
         await drainStream(stream, setBlocks, setSessionId, setTokensUsed);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setBlocks((b) => [...b, { kind: 'error', text: msg }]);
+        // Suppress error rendering when the user cancelled — the
+        // "Interrupted" status replaces it.
+        if (!cancelledRef.current) {
+          const msg = err instanceof Error ? err.message : String(err);
+          setBlocks((b) => [...b, { kind: 'error', text: msg }]);
+        }
       } finally {
-        setTurnStatus({ kind: 'done', durationMs: Date.now() - startedAt });
+        const durationMs = Date.now() - startedAt;
+        if (cancelledRef.current) {
+          setTurnStatus({ kind: 'interrupted', durationMs });
+          replaceInput(lastPromptRef.current);
+          cancelledRef.current = false;
+        } else {
+          setTurnStatus({ kind: 'done', durationMs });
+        }
         abortRef.current = null;
       }
     },
-    [busy, config, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit],
+    [busy, config, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit, replaceInput],
   );
 
   const headerItems = useMemo<HeaderItem[]>(() => {
@@ -332,6 +372,8 @@ export function App({ config, resume }: AppProps) {
                 {' '}Working... ({formatDuration(Date.now() - turnStatus.startedAt)})
               </Text>
             </Text>
+          ) : turnStatus.kind === 'interrupted' ? (
+            <Text color="red">* Interrupted in {formatDuration(turnStatus.durationMs)}</Text>
           ) : (
             <Text dimColor>* Done in {formatDuration(turnStatus.durationMs)}</Text>
           )}
@@ -475,6 +517,9 @@ async function drainStream(
         break;
       }
       case 'result':
+        // User-initiated cancellation surfaces as the "Interrupted" status
+        // line; skip the redundant error block.
+        if (msg.subtype === 'error_aborted') break;
         setBlocks((b) => [
           ...b,
           { kind: 'result', subtype: msg.subtype, text: msg.error ?? msg.result },
