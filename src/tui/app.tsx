@@ -9,7 +9,7 @@ import type { SDKMessage } from '../core/messages.js';
 import { BlockList } from './blocks.js';
 import { Divider } from './divider.js';
 import { getGitBranch } from './git.js';
-import { messagesToBlocks } from './replay.js';
+import { extractUserPrompts, messagesToBlocks } from './replay.js';
 import { ResumePicker } from './resume-picker.js';
 import { ModelPicker } from './model-picker.js';
 import { McpPicker } from './mcp-picker.js';
@@ -54,9 +54,15 @@ const SYSTEM_PROMPT_TOKEN_ESTIMATE = 700;
 interface AppProps {
   config: LcodeConfig;
   resume?: string;
+  /**
+   * Called whenever the session id changes (incl. when the loop's first
+   * `system: init` arrives for a brand-new chat). The CLI uses this to
+   * show a "Resume this session with: ..." hint after the TUI exits.
+   */
+  onSessionChange?: (sessionId: string | undefined) => void;
 }
 
-export function App({ config, resume }: AppProps) {
+export function App({ config, resume, onSessionChange }: AppProps) {
   const { exit } = useApp();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [blocks, setBlocks] = useState<UiBlock[]>([]);
@@ -81,6 +87,14 @@ export function App({ config, resume }: AppProps) {
   // Most recently submitted prompt — restored to the input on cancel so the
   // user can edit and resubmit instead of retyping.
   const lastPromptRef = useRef('');
+  // In-memory prompt history for up/down recall. Submitted prompts are
+  // appended; consecutive duplicates are skipped. historyIdx === null means
+  // the user is editing a fresh draft; otherwise it points into history.
+  // draftRef holds whatever was in the input when history nav started, so
+  // pressing past the newest entry restores it.
+  const historyRef = useRef<string[]>([]);
+  const [historyIdx, setHistoryIdx] = useState<number | null>(null);
+  const draftRef = useRef('');
   // One MCP manager per chat session. Created lazily on first render so we
   // can pass in discovered configs; cleaned up on unmount.
   const mcpManagerRef = useRef<McpManager | null>(null);
@@ -112,17 +126,33 @@ export function App({ config, resume }: AppProps) {
     setInput(next);
   }, []);
 
+  // Shared logic between the in-TUI /resume picker and the CLI --resume
+  // flag: load the session's JSONL, replay blocks, restore token count, and
+  // seed prompt-history navigation.
+  const applyResumedSession = useCallback(
+    async (resumeId: string, sessionCwd: string) => {
+      const messages = await loadSessionMessages(resumeId, sessionCwd);
+      const replayed = messagesToBlocks(messages);
+      const replayedTokens = messages.reduce(
+        (sum, m) => sum + sdkMessageTokens(m),
+        0,
+      );
+      setBlocks(replayed);
+      setSessionId(resumeId);
+      setTokensUsed(SYSTEM_PROMPT_TOKEN_ESTIMATE + replayedTokens);
+      setTurnStatus({ kind: 'idle' });
+      historyRef.current = extractUserPrompts(messages);
+      setHistoryIdx(null);
+      draftRef.current = '';
+    },
+    [],
+  );
+
   const onPickerSelect = useCallback(
     async (summary: SessionSummary) => {
       setPickerOpen(false);
       try {
-        const messages = await loadSessionMessages(summary.sessionId, summary.cwd);
-        const replayed = messagesToBlocks(messages);
-        const replayedTokens = messages.reduce((sum, m) => sum + sdkMessageTokens(m), 0);
-        setBlocks(replayed);
-        setSessionId(summary.sessionId);
-        setTokensUsed(SYSTEM_PROMPT_TOKEN_ESTIMATE + replayedTokens);
-        setTurnStatus({ kind: 'idle' });
+        await applyResumedSession(summary.sessionId, summary.cwd);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setBlocks((b) => [
@@ -131,7 +161,7 @@ export function App({ config, resume }: AppProps) {
         ]);
       }
     },
-    [],
+    [applyResumedSession],
   );
   const busy = turnStatus.kind === 'working';
   const slashOpen = !busy && isSlashPopupOpen(input);
@@ -160,6 +190,30 @@ export function App({ config, resume }: AppProps) {
   useEffect(() => {
     getGitBranch(cwd).then(setBranch);
   }, [cwd]);
+
+  useEffect(() => {
+    onSessionChange?.(sessionId);
+  }, [sessionId, onSessionChange]);
+
+  // When the CLI was launched with --resume <id>, replay the session on
+  // mount so the user sees the prior conversation, the token meter is
+  // accurate, and up-arrow recall works immediately. Mirrors what the
+  // in-TUI /resume picker does.
+  useEffect(() => {
+    if (!resume) return;
+    let cancelled = false;
+    applyResumedSession(resume, cwd).catch((err) => {
+      if (cancelled) return;
+      const msg = err instanceof Error ? err.message : String(err);
+      setBlocks((b) => [
+        ...b,
+        { kind: 'error', text: `Failed to resume session: ${msg}` },
+      ]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [resume, cwd, applyResumedSession]);
 
   // Load CLAUDE.md (user + project + ancestors) once per session and reuse
   // across every query() call. Mid-session edits to CLAUDE.md won't take
@@ -238,6 +292,8 @@ export function App({ config, resume }: AppProps) {
         const now = Date.now();
         if (now - lastEscRef.current < 500) {
           replaceInput('');
+          setHistoryIdx(null);
+          draftRef.current = '';
           lastEscRef.current = 0;
         } else {
           lastEscRef.current = now;
@@ -259,6 +315,35 @@ export function App({ config, resume }: AppProps) {
           return;
         }
       }
+      // Prompt history navigation (up = older, down = newer). Only active
+      // when not busy and the slash popup isn't claiming the arrow keys.
+      if (!busy && !slashOpen) {
+        const history = historyRef.current;
+        if (key.upArrow && history.length > 0) {
+          if (historyIdx === null) {
+            draftRef.current = input;
+            const idx = history.length - 1;
+            setHistoryIdx(idx);
+            replaceInput(history[idx]!);
+          } else if (historyIdx > 0) {
+            const idx = historyIdx - 1;
+            setHistoryIdx(idx);
+            replaceInput(history[idx]!);
+          }
+          return;
+        }
+        if (key.downArrow && historyIdx !== null) {
+          if (historyIdx < history.length - 1) {
+            const idx = historyIdx + 1;
+            setHistoryIdx(idx);
+            replaceInput(history[idx]!);
+          } else {
+            setHistoryIdx(null);
+            replaceInput(draftRef.current);
+          }
+          return;
+        }
+      }
     },
     { isActive: process.stdin.isTTY === true },
   );
@@ -268,6 +353,11 @@ export function App({ config, resume }: AppProps) {
       let trimmed = prompt.trim();
       if (!trimmed || busy) return;
       setInput('');
+      // Record in history (skip consecutive dupes) and reset navigation.
+      const history = historyRef.current;
+      if (history[history.length - 1] !== trimmed) history.push(trimmed);
+      setHistoryIdx(null);
+      draftRef.current = '';
 
       // If the slash popup is open with at least one match, Enter runs the
       // highlighted command — even if the user only typed `/` or a partial

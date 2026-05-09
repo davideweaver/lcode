@@ -11,13 +11,9 @@ import { detectTerminalTheme } from '../src/tui/theme-detect.js';
 const program = new Command();
 
 program
-  .name('lc')
+  .name('lcode')
   .description('lcode — local Claude Code replica')
-  .version('0.0.1');
-
-program
-  .command('chat', { isDefault: true })
-  .description('Open the interactive TUI (default)')
+  .version('0.0.1')
   .option('--resume <sessionId>', 'Resume an existing session by id')
   .option('--model <model>', 'Override the configured model for this session')
   .action(async (opts: { resume?: string; model?: string }) => {
@@ -28,11 +24,28 @@ program
     // detection fails the helper resolves to 'dark'.
     process.env.LCODE_THEME = await detectTerminalTheme();
     process.stdout.write('\n' + renderBanner(config, process.cwd()) + '\n\n');
+
+    let lastSessionId: string | undefined = opts.resume;
     // exitOnCtrlC: false — App owns Ctrl+C handling (single press cancels
     // the running turn, double press exits).
-    render(createElement(App, { config, resume: opts.resume }), {
-      exitOnCtrlC: false,
-    });
+    const instance = render(
+      createElement(App, {
+        config,
+        resume: opts.resume,
+        onSessionChange: (id) => {
+          if (id) lastSessionId = id;
+        },
+      }),
+      { exitOnCtrlC: false },
+    );
+    await instance.waitUntilExit();
+    if (lastSessionId) {
+      const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
+      process.stdout.write(
+        `\n${dim('Resume this session with:')}\n` +
+          `${dim(`lcode --resume ${lastSessionId}`)}\n\n`,
+      );
+    }
   });
 
 program

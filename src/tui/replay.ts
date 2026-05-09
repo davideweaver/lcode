@@ -2,6 +2,27 @@ import type { SDKMessage } from '../core/messages.js';
 import type { UiBlock } from './types.js';
 
 /**
+ * Extract the ordered list of user-submitted prompts from a session's
+ * messages, oldest first. Tool-result user messages (content: tool_result
+ * blocks) are skipped — only text content counts as a typed prompt.
+ * Consecutive duplicates are dropped to match in-session history rules.
+ */
+export function extractUserPrompts(messages: SDKMessage[]): string[] {
+  const out: string[] = [];
+  for (const msg of messages) {
+    if (msg.type !== 'user') continue;
+    for (const block of msg.message.content) {
+      if (block.type !== 'text') continue;
+      const text = block.text.trim();
+      if (!text) continue;
+      if (out[out.length - 1] === text) continue;
+      out.push(text);
+    }
+  }
+  return out;
+}
+
+/**
  * Convert a session's JSONL message stream into UI blocks for display.
  * Used by /resume so the user sees the past conversation when reopening
  * a session.
