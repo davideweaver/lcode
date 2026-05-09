@@ -17,6 +17,25 @@ export interface ToolContext {
   }) => Promise<string>;
   /** SearXNG base URL for WebSearch. Empty/undefined disables the tool. */
   searxngUrl?: string;
+  /**
+   * Spawn an isolated sub-agent loop with a fresh history. Returns the
+   * sub-agent's final text. Provided by the main runLoop's dispatch site;
+   * absent in sub-agent contexts so grandchildren are impossible (flat
+   * hierarchy). Used by the `Task` tool.
+   */
+  spawnAgent?: (req: {
+    description: string;
+    prompt: string;
+  }) => Promise<{
+    finalText: string;
+    numTurns: number;
+    toolUseCount: number;
+    totalTokens: number;
+    elapsedMs: number;
+    stopReason: 'success' | 'max_turns' | 'aborted' | 'error';
+    /** Session ID of the sub-agent's persisted JSONL, when persistence was enabled. */
+    sessionId?: string;
+  }>;
 }
 
 /**

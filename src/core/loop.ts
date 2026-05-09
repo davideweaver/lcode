@@ -5,6 +5,7 @@ import type {
   SDKAssistantMessage,
   SDKMessage,
   SDKResultMessage,
+  SDKSubagentProgressMessage,
   SDKSystemInitMessage,
   ToolResultBlock,
   ToolUseBlock,
@@ -12,6 +13,8 @@ import type {
 import { textBlock, toolResultBlock } from './messages.js';
 import { runCompletion, streamLlm, toOpenAITools, type LlmFinalMessage } from './llm.js';
 import { compact } from './compactor.js';
+import { runSubagent } from './agent.js';
+import { newSessionId } from './session.js';
 import { estimateTokens } from '../tui/tokens.js';
 import { newSessionState, type SessionState, type Tool } from '../tools/types.js';
 import { ToolRegistry } from '../tools/registry.js';
@@ -224,6 +227,18 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       return;
     }
 
+    // Sub-agent progress events queued by spawnAgent's onProgress callback.
+    // The race loop below yields these out as SDKMessages while still
+    // awaiting the parallel tool dispatch promises, so the TUI can render
+    // sub-agent activity live.
+    const progressQueue: SDKSubagentProgressMessage[] = [];
+    let progressNotify: (() => void) | null = null;
+    const wakeup = () => {
+      const n = progressNotify;
+      progressNotify = null;
+      n?.();
+    };
+
     const dispatchTool = async (tu: ToolUseBlock): Promise<ToolResultBlock> => {
       if (args.signal.aborted) {
         return toolResultBlock(tu.id, 'aborted', true);
@@ -258,6 +273,40 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
               userPrompt,
               signal: signal ?? args.signal,
             }),
+          spawnAgent: async (req) => {
+            // Sub-agent inherits the parent's full toolset (minus Task —
+            // no grandchildren) and the parent's verbatim system prompt.
+            // We deliberately do NOT expose a tool allowlist on the Task
+            // schema: when we did, smaller models filled the field with
+            // chat-template-corrupted nonsense and crippled their own
+            // sub-agents. Parent parity is the most reliable contract.
+            const subTools = enabledTools.filter((t) => t.name !== 'Task');
+            return runSubagent({
+              cwd: args.cwd,
+              baseUrl: args.baseUrl,
+              apiKey: args.apiKey,
+              model: args.model,
+              systemPrompt,
+              tools: subTools,
+              initialPrompt: req.prompt,
+              maxTurns: 15,
+              signal: args.signal,
+              sessionState: newSessionState(),
+              searxngUrl: args.searxngUrl,
+              // Persist the sub-agent's full conversation to disk for
+              // debugging. Lives at ~/.lcode/projects/<cwd>/subagents/<id>.jsonl.
+              sessionId: newSessionId(),
+              onProgress: (event) => {
+                progressQueue.push({
+                  type: 'subagent_progress',
+                  session_id: args.sessionId,
+                  parent_tool_use_id: tu.id,
+                  event,
+                });
+                wakeup();
+              },
+            });
+          },
         });
         return toolResultBlock(tu.id, result.content, result.isError ?? false);
       } catch (err) {
@@ -266,11 +315,29 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       }
     };
 
-    // Dispatch all tool_use blocks concurrently. Promise.all preserves input
-    // order, which keeps tool_result blocks aligned with their tool_use ids
-    // for the next prompt. Each handler captures its own errors above, so
+    // Dispatch concurrently, but yield progress events as they arrive.
+    // Promise.all preserves input order so tool_result blocks stay aligned
+    // with their tool_use ids. Each handler captures its own errors, so
     // Promise.all never rejects here.
-    const toolResults = await Promise.all(toolUses.map(dispatchTool));
+    const dispatchPromise = Promise.all(toolUses.map(dispatchTool));
+    let dispatchDone = false;
+    void dispatchPromise.then(() => {
+      dispatchDone = true;
+      wakeup();
+    });
+
+    while (true) {
+      while (progressQueue.length > 0) {
+        const ev = progressQueue.shift()!;
+        yield ev;
+      }
+      if (dispatchDone) break;
+      await new Promise<void>((resolve) => {
+        progressNotify = resolve;
+      });
+    }
+
+    const toolResults = await dispatchPromise;
 
     yield {
       type: 'user',

@@ -18,6 +18,14 @@ export interface LlmStreamArgs {
   tools: Tool[];
   signal: AbortSignal;
   temperature?: number;
+  /**
+   * Cap output tokens for a single turn. Used by sub-agent loops as a
+   * safety bound: when a local model goes into a degenerate loop emitting
+   * malformed text-mode tool calls (`<|tool_response>` leaks, `call:bash{...}`
+   * as plain text), the cap prevents it from eating the whole context
+   * before the loop's degenerate-output detector kicks in.
+   */
+  maxTokens?: number;
 }
 
 export interface LlmFinalMessage {
@@ -78,6 +86,7 @@ export async function* streamLlm(
     // so the TUI meter has no ground-truth to snap to.
     stream_options: { include_usage: true },
     temperature: args.temperature ?? 0.2,
+    max_tokens: args.maxTokens,
     messages: anthropicToOpenAI(args.systemPrompt, args.messages),
     tools: args.tools.length > 0 ? toOpenAITools(args.tools) : undefined,
     tool_choice: args.tools.length > 0 ? 'auto' : undefined,

@@ -133,13 +133,39 @@ export interface SDKCompactionMessage {
   truncated_tool_use_ids: string[];
 }
 
+/**
+ * Live progress event from a sub-agent, surfaced to the parent loop's
+ * yield stream so the TUI can render the sub-agent's tool calls in
+ * real time under the parent's `Task` tool_call block.
+ */
+export type SubagentProgressEvent =
+  | { kind: 'init' }
+  | { kind: 'text_delta'; text: string }
+  | {
+      kind: 'tool_use';
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+    }
+  | { kind: 'tool_result'; tool_use_id: string; isError: boolean }
+  | { kind: 'turn_end' };
+
+export interface SDKSubagentProgressMessage {
+  type: 'subagent_progress';
+  session_id: string;
+  /** ID of the parent's `Task` tool_use this event is reporting on. */
+  parent_tool_use_id: string;
+  event: SubagentProgressEvent;
+}
+
 export type SDKMessage =
   | SDKSystemInitMessage
   | SDKAssistantMessage
   | SDKUserMessage
   | SDKPartialAssistantMessage
   | SDKResultMessage
-  | SDKCompactionMessage;
+  | SDKCompactionMessage
+  | SDKSubagentProgressMessage;
 
 export function textBlock(text: string): TextBlock {
   return { type: 'text', text };

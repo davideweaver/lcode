@@ -16,16 +16,23 @@ export function newSessionId(): string {
   return randomUUID();
 }
 
-export function sessionFilePath(sessionId: string, cwd: string): string {
+export function sessionFilePath(
+  sessionId: string,
+  cwd: string,
+  subdir?: string,
+): string {
   const encoded = cwd.replace(/[/\\:]/g, '-').replace(/^-+/, '');
-  return join(ROOT, encoded, `${sessionId}.jsonl`);
+  return subdir
+    ? join(ROOT, encoded, subdir, `${sessionId}.jsonl`)
+    : join(ROOT, encoded, `${sessionId}.jsonl`);
 }
 
 export async function openSession(
   sessionId: string,
   cwd: string,
+  subdir?: string,
 ): Promise<Session> {
-  const filePath = sessionFilePath(sessionId, cwd);
+  const filePath = sessionFilePath(sessionId, cwd, subdir);
   await mkdir(dirname(filePath), { recursive: true });
   return { sessionId, cwd, filePath };
 }

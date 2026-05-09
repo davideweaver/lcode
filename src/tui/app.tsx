@@ -744,6 +744,9 @@ async function drainStream(
           },
         ]);
         break;
+      case 'subagent_progress':
+        setBlocks((b) => applySubagentProgress(b, msg.parent_tool_use_id, msg.event));
+        break;
     }
   }
 }
@@ -816,6 +819,62 @@ function restoreTokensUsed(messages: SDKMessage[]): number {
     total += sdkMessageTokens(messages[i]!);
   }
   return total;
+}
+
+function applySubagentProgress(
+  blocks: UiBlock[],
+  parentToolUseId: string,
+  event: Extract<SDKMessage, { type: 'subagent_progress' }>['event'],
+): UiBlock[] {
+  return blocks.map((b) => {
+    if (b.kind !== 'tool_call' || b.id !== parentToolUseId) return b;
+    const activity = b.subagentActivity ?? {
+      initialized: false,
+      currentText: '',
+      tools: [],
+    };
+    switch (event.kind) {
+      case 'init':
+        return { ...b, subagentActivity: { ...activity, initialized: true } };
+      case 'text_delta':
+        return {
+          ...b,
+          subagentActivity: { ...activity, currentText: activity.currentText + event.text },
+        };
+      case 'turn_end':
+        // Don't clear here — if the turn ended with no tools (success
+        // text-only response, or a degenerate failure), we want the
+        // streaming text to remain visible. Clear on `tool_use` instead,
+        // which signals the text was a preamble before tool dispatch.
+        return b;
+      case 'tool_use':
+        return {
+          ...b,
+          subagentActivity: {
+            ...activity,
+            // Tools have arrived, so any streaming preamble text is no
+            // longer relevant — replace with the nested tool list view.
+            currentText: '',
+            tools: [
+              ...activity.tools,
+              { id: event.id, name: event.name, input: event.input, status: 'pending' as const },
+            ],
+          },
+        };
+      case 'tool_result':
+        return {
+          ...b,
+          subagentActivity: {
+            ...activity,
+            tools: activity.tools.map((t) =>
+              t.id === event.tool_use_id
+                ? { ...t, status: event.isError ? ('error' as const) : ('done' as const) }
+                : t,
+            ),
+          },
+        };
+    }
+  });
 }
 
 function reconcileToolInputs(

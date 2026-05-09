@@ -15,6 +15,24 @@ export type UiBlock =
       input: Record<string, unknown>;
       status: 'pending' | 'done' | 'error';
       result?: string;
+      /**
+       * Live sub-agent activity, populated only when this tool_call is a
+       * `Task` invocation. Each entry mirrors a tool the sub-agent ran;
+       * statuses flip to 'done'/'error' when the matching tool_result
+       * event arrives. Drives the nested rendering under the parent's
+       * Task block.
+       */
+      subagentActivity?: {
+        initialized: boolean;
+        /** Streaming text accumulated from the sub-agent's current LLM call. */
+        currentText: string;
+        tools: {
+          id: string;
+          name: string;
+          input: Record<string, unknown>;
+          status: 'pending' | 'done' | 'error';
+        }[];
+      };
     }
   | { kind: 'result'; subtype: string; text?: string }
   | { kind: 'error'; text: string }

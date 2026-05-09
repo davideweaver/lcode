@@ -122,6 +122,28 @@ function BlockView({
           </Box>
         );
       }
+      if (block.name === "Task") {
+        const description =
+          typeof block.input.description === "string"
+            ? block.input.description
+            : typeof block.input.prompt === "string"
+              ? firstLineShort(block.input.prompt)
+              : "subagent";
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={color}>
+              {indicator} <Text bold>Task</Text>
+              <Text color={MUTED}>({description})</Text>
+            </Text>
+            <TaskOutput
+              status={block.status}
+              result={block.result ?? ""}
+              activity={block.subagentActivity}
+              expanded={showThinking}
+            />
+          </Box>
+        );
+      }
       if (block.name === "WebSearch") {
         const query = typeof block.input.query === "string" ? block.input.query : "";
         return (
@@ -375,6 +397,161 @@ function formatBytes(n: number): string {
   if (n < 1024) return `${n}B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)}KB`;
   return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+interface SubagentActivity {
+  initialized: boolean;
+  currentText: string;
+  tools: {
+    id: string;
+    name: string;
+    input: Record<string, unknown>;
+    status: "pending" | "done" | "error";
+  }[];
+}
+
+function TaskOutput({
+  status,
+  result,
+  activity,
+  expanded,
+}: {
+  status: "pending" | "done" | "error";
+  result: string;
+  activity?: SubagentActivity;
+  expanded: boolean;
+}) {
+  // While the sub-agent is running, render its live activity under the
+  // parent's Task block. Three states layer on top of each other:
+  //   1. No activity yet → "Running…"
+  //   2. Initialized but no text or tools → "Initializing…"
+  //   3. Streaming text or tools dispatched → show them
+  if (status === "pending") {
+    if (!activity || (!activity.initialized && activity.tools.length === 0 && !activity.currentText)) {
+      return (
+        <Box flexDirection="column" marginLeft={2}>
+          <Text color={MUTED}>└ Running...</Text>
+        </Box>
+      );
+    }
+    const hasTools = activity.tools.length > 0;
+    const streamingText = activity.currentText.trim();
+    if (!hasTools && !streamingText) {
+      return (
+        <Box flexDirection="column" marginLeft={2}>
+          <Text color={MUTED}>└ Initializing...</Text>
+        </Box>
+      );
+    }
+    // Streaming text is hidden by default — gets verbose during the
+    // sub-agent's final summary turn. ctrl+o reveals it. If there are no
+    // tools yet (still on first turn, no content visible at all), fall
+    // back to showing the streaming text so the UI doesn't look frozen.
+    const showStreamingText = expanded || !hasTools;
+    // Limit the live tool list to the most-recent N entries; older ones
+    // collapse into a "+N more" line that ctrl+o expands.
+    const MAX_VISIBLE_TOOLS = 3;
+    const visibleTools = expanded
+      ? activity.tools
+      : activity.tools.slice(-MAX_VISIBLE_TOOLS);
+    const hiddenToolCount = activity.tools.length - visibleTools.length;
+    return (
+      <Box flexDirection="column" marginLeft={2}>
+        {hasTools &&
+          visibleTools.map((t, i) => {
+            // Failed sub-tool calls get a small `✗` so the user can see
+            // what didn't work; successful and pending ones stay clean.
+            const errorMark = t.status === "error" ? <Text color="red">✗ </Text> : null;
+            return (
+              <Text key={t.id}>
+                {i === 0 ? "└ " : "  "}
+                {errorMark}
+                <Text bold>{t.name}</Text>
+                <Text color={MUTED}>({summarizeInput(t.input)})</Text>
+                {t.status === "pending" && <Text color={MUTED}> Running…</Text>}
+              </Text>
+            );
+          })}
+        {hiddenToolCount > 0 && (
+          <Text color={MUTED}>
+            {"  "}… +{hiddenToolCount} tool use{hiddenToolCount === 1 ? "" : "s"} (ctrl+o to expand)
+          </Text>
+        )}
+        {showStreamingText && streamingText && (
+          <Box flexDirection="column">
+            <Text color={MUTED}>{hasTools ? "  " : "└ "}{lastNLines(streamingText, 3)}</Text>
+          </Box>
+        )}
+      </Box>
+    );
+  }
+
+  // Done state: parse the [lcode-task] header for the summary line.
+  let summary: string;
+  let body = result;
+  const meta = parseTaskMeta(result);
+  if (meta) {
+    summary = meta.summary;
+    body = meta.rest;
+  } else if (status === "error") {
+    summary = result.split("\n", 1)[0] ?? "Sub-agent failed";
+  } else {
+    summary = "Done";
+  }
+  const toolCount = activity?.tools.length ?? 0;
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text color={MUTED}>
+        └ {summary}
+        {!expanded && (toolCount > 0 || body.trim() !== "") && (
+          <Text color={MUTED}> (ctrl+o to expand)</Text>
+        )}
+      </Text>
+      {expanded && (
+        <Box flexDirection="column" marginLeft={2}>
+          {activity && activity.tools.length > 0 && (
+            <Box flexDirection="column">
+              {activity.tools.map((t) => (
+                <Text key={t.id} color={MUTED}>
+                  {t.status === "error" ? "✗" : "·"} {t.name}({summarizeInput(t.input)})
+                </Text>
+              ))}
+            </Box>
+          )}
+          {body.trim() !== "" && (
+            <Box flexDirection="column" marginTop={activity && activity.tools.length > 0 ? 1 : 0}>
+              {body.split("\n").map((line, i) => (
+                <Text key={i} color={MUTED}>
+                  {line || " "}
+                </Text>
+              ))}
+            </Box>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+function parseTaskMeta(result: string): { summary: string; rest: string } | null {
+  const nl = result.indexOf("\n");
+  const head = nl >= 0 ? result.slice(0, nl) : result;
+  if (!head.startsWith("[lcode-task]")) return null;
+  return {
+    summary: head.replace("[lcode-task]", "").trim(),
+    rest: nl >= 0 ? result.slice(nl + 1).replace(/^\n+/, "") : "",
+  };
+}
+
+function firstLineShort(s: string): string {
+  const line = s.split("\n", 1)[0]?.trim() ?? "";
+  return line.length > 60 ? line.slice(0, 59) + "…" : line;
+}
+
+function lastNLines(s: string, n: number): string {
+  const lines = s.split("\n").filter((l) => l.trim());
+  if (lines.length <= n) return s.trim();
+  return "…\n" + lines.slice(-n).join("\n");
 }
 
 function WebSearchOutput({

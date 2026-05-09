@@ -21,6 +21,7 @@ const STRUCTURAL_MARKERS = [
   'im_start',
   'im_end',
   'tool_call',
+  'tool_response',
 ];
 
 /**
