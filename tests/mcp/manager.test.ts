@@ -140,4 +140,116 @@ describe('McpManager', () => {
     expect(m.transportOf('b')).toBe('sse');
     expect(m.transportOf('missing')).toBeNull();
   });
+
+  it('accepts entries carrying a source path and exposes it via sourceOf', async () => {
+    const m = new McpManager(
+      [
+        { config: { type: 'http', name: 'one', url: 'http://1' }, source: '/etc/lcode/mcp.json' },
+        { config: { type: 'http', name: 'two', url: 'http://2' } }, // no source
+      ],
+      { connect: async () => fakeClient({}) },
+    );
+    await m.start();
+    expect(m.sourceOf('one')).toBe('/etc/lcode/mcp.json');
+    expect(m.sourceOf('two')).toBeNull();
+    expect(m.sourceOf('missing')).toBeNull();
+  });
+
+  it('toolsFor returns only that server tools', async () => {
+    const m = new McpManager(
+      [
+        { type: 'http', name: 'one', url: 'http://1' },
+        { type: 'http', name: 'two', url: 'http://2' },
+      ],
+      {
+        connect: async (cfg) =>
+          fakeClient({ tools: [{ name: `${cfg.name}-t`, inputSchema: {} }] }),
+      },
+    );
+    await m.start();
+    expect(m.toolsFor('one').map((t) => t.name)).toEqual(['mcp__one__one-t']);
+    expect(m.toolsFor('two').map((t) => t.name)).toEqual(['mcp__two__two-t']);
+    expect(m.toolsFor('missing')).toEqual([]);
+  });
+
+  it('reconnect refreshes a single server without touching the rest', async () => {
+    const calls: string[] = [];
+    const m = new McpManager(
+      [
+        { type: 'http', name: 'one', url: 'http://1' },
+        { type: 'http', name: 'two', url: 'http://2' },
+      ],
+      {
+        connect: async (cfg) => {
+          calls.push(cfg.name);
+          return fakeClient({ tools: [{ name: 'ping', inputSchema: {} }] });
+        },
+      },
+    );
+    await m.start();
+    expect(calls.sort()).toEqual(['one', 'two']);
+    calls.length = 0;
+    await m.reconnect('one');
+    expect(calls).toEqual(['one']);
+    expect(m.status().get('one')?.state).toBe('ready');
+    expect(m.status().get('two')?.state).toBe('ready');
+  });
+
+  it('skips connection for disabled servers at start', async () => {
+    const connect = vi.fn(async () => fakeClient({ tools: [{ name: 'ping', inputSchema: {} }] }));
+    const m = new McpManager(
+      [
+        { type: 'http', name: 'on', url: 'http://1' },
+        { type: 'http', name: 'off', url: 'http://2' },
+      ],
+      { connect, disabled: new Set(['off']) },
+    );
+    await m.start();
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(m.status().get('on')?.state).toBe('ready');
+    expect(m.status().get('off')?.state).toBe('disabled');
+    expect(m.isDisabled('off')).toBe(true);
+    expect(m.tools().map((t) => t.name)).toEqual(['mcp__on__ping']);
+  });
+
+  it('disable closes the client, drops tools, and persists', async () => {
+    const close = vi.fn(async () => {});
+    const persist = vi.fn(async () => {});
+    const m = new McpManager(
+      [{ type: 'http', name: 'one', url: 'http://1' }],
+      {
+        connect: async () => ({
+          ...fakeClient({ tools: [{ name: 'ping', inputSchema: {} }] }),
+          close,
+        }),
+        persistDisabled: persist,
+      },
+    );
+    await m.start();
+    expect(m.tools()).toHaveLength(1);
+    await m.disable('one');
+    expect(m.status().get('one')?.state).toBe('disabled');
+    expect(m.tools()).toHaveLength(0);
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledWith('one', true);
+  });
+
+  it('enable persists, reconnects, and re-exposes tools', async () => {
+    const persist = vi.fn(async () => {});
+    const m = new McpManager(
+      [{ type: 'http', name: 'one', url: 'http://1' }],
+      {
+        connect: async () => fakeClient({ tools: [{ name: 'ping', inputSchema: {} }] }),
+        disabled: new Set(['one']),
+        persistDisabled: persist,
+      },
+    );
+    await m.start();
+    expect(m.status().get('one')?.state).toBe('disabled');
+    expect(m.tools()).toHaveLength(0);
+    await m.enable('one');
+    expect(persist).toHaveBeenCalledWith('one', false);
+    expect(m.status().get('one')?.state).toBe('ready');
+    expect(m.tools()).toHaveLength(1);
+  });
 });

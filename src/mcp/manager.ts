@@ -1,13 +1,20 @@
 import { z } from 'zod';
 import type { Tool } from '../tools/types.js';
 import { connectMcpServer, type McpClient, type McpToolDef } from './client.js';
-import type { McpServerConfig, McpServerStatus, McpTransport } from './types.js';
+import { setServerDisabled } from './disabled.js';
+import type {
+  McpServerConfig,
+  McpServerEntry,
+  McpServerStatus,
+  McpTransport,
+} from './types.js';
 
 /** Anthropic / OpenAI-style tool name regex limit. */
 const MAX_TOOL_NAME_LEN = 64;
 
 interface ServerEntry {
   config: McpServerConfig;
+  source?: string;
   status: McpServerStatus;
   client?: McpClient;
   tools: Tool[];
@@ -18,6 +25,21 @@ export interface McpManagerOptions {
   onWarn?: (msg: string) => void;
   /** Override connector (for tests). */
   connect?: (cfg: McpServerConfig) => Promise<McpClient>;
+  /** Names of servers that should not connect — they appear in `status()` as
+   * `{ state: 'disabled' }`. The set is loaded from `~/.lcode/mcp-disabled.json`
+   * by the caller. */
+  disabled?: Set<string>;
+  /** Persistence sink for disable/enable. Defaults to writing
+   * `~/.lcode/mcp-disabled.json`. Override for tests. */
+  persistDisabled?: (name: string, disabled: boolean) => Promise<void>;
+}
+
+/** Accept either bare configs (legacy: tests, programmatic API) or entries
+ * carrying a source path (current path: file-loader output). */
+type InputServer = McpServerConfig | McpServerEntry;
+
+function toEntry(item: InputServer): McpServerEntry {
+  return 'config' in item ? item : { config: item };
 }
 
 /**
@@ -32,32 +54,46 @@ export class McpManager {
   private entries = new Map<string, ServerEntry>();
   private warn: (msg: string) => void;
   private connect: (cfg: McpServerConfig) => Promise<McpClient>;
+  private persist: (name: string, disabled: boolean) => Promise<void>;
 
-  constructor(configs: McpServerConfig[], opts: McpManagerOptions = {}) {
+  constructor(servers: InputServer[], opts: McpManagerOptions = {}) {
     this.warn = opts.onWarn ?? ((m) => console.warn(`[mcp] ${m}`));
     this.connect = opts.connect ?? connectMcpServer;
-    for (const cfg of configs) {
-      this.entries.set(cfg.name, {
-        config: cfg,
-        status: { state: 'connecting' },
+    this.persist = opts.persistDisabled ?? ((n, d) => setServerDisabled(n, d));
+    const disabled = opts.disabled ?? new Set<string>();
+    for (const item of servers) {
+      const e = toEntry(item);
+      const isDisabled = disabled.has(e.config.name);
+      this.entries.set(e.config.name, {
+        config: e.config,
+        source: e.source,
+        status: isDisabled ? { state: 'disabled' } : { state: 'connecting' },
         tools: [],
       });
     }
   }
 
   /**
-   * Connect to every configured server in parallel. Never throws — per-server
+   * Connect to every enabled server in parallel. Never throws — per-server
    * failures land in `status()` so the rest of the session can proceed.
+   * Disabled servers are skipped.
    */
   async start(): Promise<void> {
     await Promise.allSettled(
-      [...this.entries.values()].map((e) => this.connectOne(e)),
+      [...this.entries.values()]
+        .filter((e) => e.status.state !== 'disabled')
+        .map((e) => this.connectOne(e)),
     );
   }
 
   /** Adapter tools from all currently-ready servers. */
   tools(): Tool[] {
     return [...this.entries.values()].flatMap((e) => e.tools);
+  }
+
+  /** Tools exposed by a single server (used by the picker's tool list). */
+  toolsFor(name: string): Tool[] {
+    return this.entries.get(name)?.tools ?? [];
   }
 
   /** Status snapshot keyed by server name. */
@@ -72,15 +108,84 @@ export class McpManager {
     return this.entries.get(name)?.config.type ?? null;
   }
 
-  /** Close all clients and reconnect using the same configs. */
+  /** Path of the file the server was declared in, when known. */
+  sourceOf(name: string): string | null {
+    return this.entries.get(name)?.source ?? null;
+  }
+
+  /** Resolved config (used for showing URL/command in the detail view). */
+  configOf(name: string): McpServerConfig | null {
+    return this.entries.get(name)?.config ?? null;
+  }
+
+  isDisabled(name: string): boolean {
+    return this.entries.get(name)?.status.state === 'disabled';
+  }
+
+  /** Close all clients and reconnect every enabled server using the same
+   * configs. Disabled servers stay disabled. */
   async reload(): Promise<void> {
     await this.close();
     for (const e of this.entries.values()) {
+      if (e.status.state === 'disabled') continue;
       e.status = { state: 'connecting' };
       e.tools = [];
       e.client = undefined;
     }
     await this.start();
+  }
+
+  /** Close + reconnect a single server. No-op if the server is disabled or
+   * not configured. */
+  async reconnect(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (!entry || entry.status.state === 'disabled') return;
+    const c = entry.client;
+    entry.client = undefined;
+    if (c) {
+      try {
+        await c.close();
+      } catch {
+        /* swallow */
+      }
+    }
+    entry.status = { state: 'connecting' };
+    entry.tools = [];
+    await this.connectOne(entry);
+  }
+
+  /** Mark the server as disabled, drop its client + tools, and persist. */
+  async disable(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (!entry) return;
+    if (entry.status.state !== 'disabled') {
+      const c = entry.client;
+      entry.client = undefined;
+      entry.tools = [];
+      entry.status = { state: 'disabled' };
+      if (c) {
+        try {
+          await c.close();
+        } catch {
+          /* swallow */
+        }
+      }
+    }
+    await this.persist(name, true);
+  }
+
+  /** Re-enable a previously disabled server, persist, and reconnect. */
+  async enable(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (!entry) return;
+    if (entry.status.state === 'disabled') {
+      entry.status = { state: 'connecting' };
+      entry.tools = [];
+    }
+    await this.persist(name, false);
+    if (entry.status.state === 'connecting') {
+      await this.connectOne(entry);
+    }
   }
 
   async close(): Promise<void> {

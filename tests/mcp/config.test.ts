@@ -38,14 +38,32 @@ describe('loadMcpServers', () => {
       'utf8',
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
-    expect(servers).toEqual([
-      {
-        type: 'stdio',
-        name: 'sentry',
-        command: 'npx',
-        args: ['-y', 'mcp-remote@latest', 'https://x'],
-      },
-    ]);
+    expect(servers).toHaveLength(1);
+    expect(servers[0].config).toEqual({
+      type: 'stdio',
+      name: 'sentry',
+      command: 'npx',
+      args: ['-y', 'mcp-remote@latest', 'https://x'],
+    });
+  });
+
+  it('records the absolute path of the file each server was loaded from', async () => {
+    const { home, projectRoot, subDir } = await setup();
+    await mkdir(join(home, '.lcode'), { recursive: true });
+    const lcodePath = join(home, '.lcode', 'mcp.json');
+    const projectPath = join(projectRoot, '.mcp.json');
+    await writeFile(
+      lcodePath,
+      JSON.stringify({ mcpServers: { fromUser: { type: 'http', url: 'http://1' } } }),
+    );
+    await writeFile(
+      projectPath,
+      JSON.stringify({ mcpServers: { fromProj: { type: 'http', url: 'http://2' } } }),
+    );
+    const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
+    const byName = Object.fromEntries(servers.map((s) => [s.config.name, s]));
+    expect(byName.fromUser.source).toBe(lcodePath);
+    expect(byName.fromProj.source).toBe(projectPath);
   });
 
   it('respects explicit type=http and type=sse', async () => {
@@ -61,7 +79,7 @@ describe('loadMcpServers', () => {
       'utf8',
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
-    const byName = Object.fromEntries(servers.map((s) => [s.name, s]));
+    const byName = Object.fromEntries(servers.map((s) => [s.config.name, s.config]));
     expect(byName.context7).toMatchObject({ type: 'http', url: 'https://mcp.context7.com/mcp' });
     expect(byName.xerro).toMatchObject({ type: 'sse', url: 'http://localhost:9205/mcp' });
   });
@@ -84,7 +102,8 @@ describe('loadMcpServers', () => {
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
     expect(servers).toHaveLength(1);
-    expect(servers[0]).toMatchObject({ name: 'shared', url: 'http://lcode' });
+    expect(servers[0].config).toMatchObject({ name: 'shared', url: 'http://lcode' });
+    expect(servers[0].source).toBe(join(home, '.lcode', 'mcp.json'));
   });
 
   it('project file beats Claude Code fallback when lcode file is absent', async () => {
@@ -98,7 +117,7 @@ describe('loadMcpServers', () => {
       JSON.stringify({ mcpServers: { sh: { type: 'http', url: 'http://claude' } } }),
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
-    expect(servers[0]).toMatchObject({ url: 'http://project' });
+    expect(servers[0].config).toMatchObject({ url: 'http://project' });
   });
 
   it('reads Claude Code fallback when nothing else is present', async () => {
@@ -108,7 +127,9 @@ describe('loadMcpServers', () => {
       JSON.stringify({ mcpServers: { foo: { type: 'http', url: 'http://x' } } }),
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
-    expect(servers).toEqual([{ type: 'http', name: 'foo', url: 'http://x' }]);
+    expect(servers).toHaveLength(1);
+    expect(servers[0].config).toEqual({ type: 'http', name: 'foo', url: 'http://x' });
+    expect(servers[0].source).toBe(join(home, '.claude.json'));
   });
 
   it('drops invalid entries with a warning but keeps the rest', async () => {
@@ -132,7 +153,7 @@ describe('loadMcpServers', () => {
       homeDir: home,
       onWarn: (m) => warnings.push(m),
     });
-    expect(servers.map((s) => s.name)).toEqual(['good']);
+    expect(servers.map((s) => s.config.name)).toEqual(['good']);
     expect(warnings.length).toBe(3);
     expect(warnings.join('\n')).toMatch(/bad/);
   });
@@ -148,6 +169,6 @@ describe('loadMcpServers', () => {
       }),
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
-    expect(servers[0]).toMatchObject({ type: 'http', url: 'http://x' });
+    expect(servers[0].config).toMatchObject({ type: 'http', url: 'http://x' });
   });
 });

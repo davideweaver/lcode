@@ -13,6 +13,7 @@ export interface SlashContext {
   clearSession: () => void;
   openResumePicker: () => void;
   openModelPicker: () => void;
+  openMcpPicker: () => void;
   /**
    * Manager for MCP server connections. Always present at runtime; the App
    * instantiates a single manager at session start and shares it here.
@@ -94,21 +95,25 @@ export const COMMANDS: SlashCommand[] = [
   },
   {
     name: 'mcp',
-    description: 'List configured MCP servers and their status. /mcp reload to reconnect.',
+    description: 'Browse configured MCP servers. /mcp reload to reconnect all.',
     execute: async (args, ctx) => {
       const sub = args.trim();
       if (sub === 'reload') {
         ctx.addBlock({ kind: 'slash_output', text: '* reloading MCP servers…' });
         await ctx.mcpManager.reload();
-      } else if (sub && sub !== '') {
+        ctx.addBlock({ kind: 'slash_output', text: '* reloaded.' });
+        return;
+      }
+      if (sub) {
         ctx.addBlock({
           kind: 'slash_output',
           text: `Unknown /mcp subcommand: ${sub}. Available: reload`,
         });
         return;
       }
-      const status = ctx.mcpManager.status();
-      if (status.size === 0) {
+      // No args: prefer the interactive picker. Fall back to a setup hint
+      // when nothing is configured so the user has somewhere to start.
+      if (ctx.mcpManager.status().size === 0) {
         ctx.addBlock({
           kind: 'slash_output',
           text:
@@ -117,20 +122,7 @@ export const COMMANDS: SlashCommand[] = [
         });
         return;
       }
-      const nameWidth = Math.max(...[...status.keys()].map((n) => n.length), 6);
-      const lines = ['MCP servers:'];
-      for (const [name, st] of status) {
-        const transport = ctx.mcpManager.transportOf(name) ?? '?';
-        let detail: string;
-        if (st.state === 'ready') detail = `${st.toolCount} tools, ${st.latencyMs}ms`;
-        else if (st.state === 'failed') detail = `failed: ${st.error}`;
-        else detail = 'connecting…';
-        lines.push(
-          `  ${name.padEnd(nameWidth)}  ${transport.padEnd(5)}  ${st.state.padEnd(10)}  ${detail}`,
-        );
-      }
-      lines.push('', 'Subcommands: /mcp reload');
-      ctx.addBlock({ kind: 'slash_output', text: lines.join('\n') });
+      ctx.openMcpPicker();
     },
   },
   {

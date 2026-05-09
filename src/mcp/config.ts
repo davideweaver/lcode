@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { McpServerConfig } from './types.js';
+import type { McpServerConfig, McpServerEntry } from './types.js';
 
 export interface LoadMcpOptions {
   /** Override for tests; defaults to os.homedir(). */
@@ -26,25 +26,30 @@ export interface LoadMcpOptions {
 export async function loadMcpServers(
   cwd: string,
   opts: LoadMcpOptions = {},
-): Promise<McpServerConfig[]> {
+): Promise<McpServerEntry[]> {
   const home = opts.homeDir ?? homedir();
   const warn = opts.onWarn ?? ((m) => console.warn(`[mcp] ${m}`));
 
+  // Each layer remembers the absolute path it came from so the picker can
+  // surface it as the "Config location" field in the server detail view.
   const layers: { source: string; raw: unknown }[] = [];
 
-  const lcodeUser = await tryReadJson(join(home, '.lcode', 'mcp.json'));
-  if (lcodeUser !== null) layers.push({ source: '~/.lcode/mcp.json', raw: lcodeUser });
+  const lcodeUserPath = join(home, '.lcode', 'mcp.json');
+  const lcodeUser = await tryReadJson(lcodeUserPath);
+  if (lcodeUser !== null) layers.push({ source: lcodeUserPath, raw: lcodeUser });
 
   const projectRoot = (await findProjectRoot(cwd)) ?? cwd;
-  const project = await tryReadJson(join(projectRoot, '.mcp.json'));
-  if (project !== null) layers.push({ source: `${projectRoot}/.mcp.json`, raw: project });
+  const projectPath = join(projectRoot, '.mcp.json');
+  const project = await tryReadJson(projectPath);
+  if (project !== null) layers.push({ source: projectPath, raw: project });
 
-  const claudeUser = await tryReadJson(join(home, '.claude.json'));
-  if (claudeUser !== null) layers.push({ source: '~/.claude.json', raw: claudeUser });
+  const claudeUserPath = join(home, '.claude.json');
+  const claudeUser = await tryReadJson(claudeUserPath);
+  if (claudeUser !== null) layers.push({ source: claudeUserPath, raw: claudeUser });
 
   // Higher-precedence layers come first; merge by name keeping the first
   // occurrence.
-  const merged = new Map<string, McpServerConfig>();
+  const merged = new Map<string, McpServerEntry>();
   for (const { source, raw } of layers) {
     const entries = extractMcpServers(raw);
     if (entries === null) {
@@ -54,7 +59,7 @@ export async function loadMcpServers(
     for (const [name, value] of Object.entries(entries)) {
       if (merged.has(name)) continue;
       const cfg = normalizeEntry(name, value, warn, source);
-      if (cfg) merged.set(name, cfg);
+      if (cfg) merged.set(name, { config: cfg, source });
     }
   }
 

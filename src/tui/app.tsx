@@ -12,6 +12,7 @@ import { getGitBranch } from './git.js';
 import { messagesToBlocks } from './replay.js';
 import { ResumePicker } from './resume-picker.js';
 import { ModelPicker } from './model-picker.js';
+import { McpPicker } from './mcp-picker.js';
 import {
   getSlashQuery,
   isSlashPopupOpen,
@@ -26,6 +27,7 @@ import { loadSessionMessages } from '../core/session.js';
 import type { SessionSummary } from '../core/sessions.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
 import { loadMcpServers } from '../mcp/config.js';
+import { loadDisabledServers } from '../mcp/disabled.js';
 import { McpManager } from '../mcp/manager.js';
 
 type HeaderItem = { kind: 'health'; health: HealthResult };
@@ -67,6 +69,7 @@ export function App({ config, resume }: AppProps) {
   const [inputKey, setInputKey] = useState(0);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [mcpPickerOpen, setMcpPickerOpen] = useState(false);
   const [currentModel, setCurrentModel] = useState(config.model);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [showThinking, setShowThinking] = useState(false);
@@ -165,9 +168,12 @@ export function App({ config, resume }: AppProps) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const configs = await loadMcpServers(cwd);
+      const [entries, disabled] = await Promise.all([
+        loadMcpServers(cwd),
+        loadDisabledServers(),
+      ]);
       if (cancelled) return;
-      const manager = new McpManager(configs);
+      const manager = new McpManager(entries, { disabled });
       mcpManagerRef.current = manager;
       await manager.start();
     })();
@@ -261,6 +267,7 @@ export function App({ config, resume }: AppProps) {
           },
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
+          openMcpPicker: () => setMcpPickerOpen(true),
           mcpManager: mcpManagerRef.current!,
           exit,
         });
@@ -354,6 +361,11 @@ export function App({ config, resume }: AppProps) {
             ]);
           }}
           onCancel={() => setModelPickerOpen(false)}
+        />
+      ) : mcpPickerOpen ? (
+        <McpPicker
+          mcpManager={mcpManagerRef.current!}
+          onCancel={() => setMcpPickerOpen(false)}
         />
       ) : (
         <>

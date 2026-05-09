@@ -83,9 +83,12 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
   const inlineSdkConfigs = pickSdkConfigs(options.mcpServers);
 
   const ownsManager = !options.mcpManager;
+  // For ephemeral managers created here we only need the configs themselves —
+  // the source paths surfaced by `loadMcpServers` are only used by the TUI's
+  // /mcp picker, which is owned by the long-lived manager in App.
   const fileConfigs =
     ownsManager && options.loadMcpFromConfigFiles !== false
-      ? await loadMcpServers(cwd)
+      ? (await loadMcpServers(cwd)).map((e) => e.config)
       : [];
   const allProtocolConfigs = mergeByName(fileConfigs, protocolConfigs);
 

@@ -11,6 +11,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
   exited: { count: number };
   resumed: { count: number };
   modelPicked: { count: number };
+  mcpPicked: { count: number };
   modelSet: { value: string | null };
 } {
   const blocks: UiBlock[] = [];
@@ -18,6 +19,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
   const exited = { count: 0 };
   const resumed = { count: 0 };
   const modelPicked = { count: 0 };
+  const mcpPicked = { count: 0 };
   const modelSet: { value: string | null } = { value: null };
   const config: LcodeConfig = {
     llmUrl: 'http://localhost:9200',
@@ -32,6 +34,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
     exited,
     resumed,
     modelPicked,
+    mcpPicked,
     modelSet,
     ctx: {
       cwd: '/tmp/test',
@@ -45,6 +48,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
       clearSession: () => cleared.count++,
       openResumePicker: () => resumed.count++,
       openModelPicker: () => modelPicked.count++,
+      openMcpPicker: () => mcpPicked.count++,
       mcpManager: new McpManager([]),
       exit: () => exited.count++,
       ...overrides,
@@ -143,5 +147,23 @@ describe('maybeRunSlashCommand', () => {
     expect(modelSet.value).toBe('llama-3.1-8b');
     expect(modelPicked.count).toBe(0);
     expect((blocks[0] as { text: string }).text).toContain('llama-3.1-8b');
+  });
+
+  it('bare /mcp opens the picker when servers are configured', async () => {
+    const mgr = new McpManager(
+      [{ type: 'http', name: 'one', url: 'http://1' }],
+      { connect: async () => ({ listTools: async () => [], callTool: async () => ({ content: '', isError: false }), close: async () => {} }) },
+    );
+    await mgr.start();
+    const { ctx, mcpPicked } = mkCtx({ mcpManager: mgr });
+    await maybeRunSlashCommand('/mcp', ctx);
+    expect(mcpPicked.count).toBe(1);
+  });
+
+  it('bare /mcp with no servers configured prints the setup hint', async () => {
+    const { ctx, blocks, mcpPicked } = mkCtx();
+    await maybeRunSlashCommand('/mcp', ctx);
+    expect(mcpPicked.count).toBe(0);
+    expect((blocks[0] as { text: string }).text).toMatch(/none configured/);
   });
 });
