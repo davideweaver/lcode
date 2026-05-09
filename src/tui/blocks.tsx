@@ -176,7 +176,35 @@ function BlockView({
           <Text color={MUTED}>{block.text}</Text>
         </Box>
       );
+    case "compaction": {
+      const tierLabel = block.subtype === "tier1" ? "tier 1 — tool results truncated" : "tier 2 — summarized";
+      const saved = block.savedTokens > 0 ? ` (~${formatBrief(block.savedTokens)} tokens reclaimed)` : "";
+      return (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="cyan">
+            * compacted: {tierLabel}
+            <Text color={MUTED}>{saved}</Text>
+          </Text>
+          {block.summary && (
+            <Box marginLeft={2} marginTop={0}>
+              <Text color={MUTED}>{firstLines(block.summary, 4)}</Text>
+            </Box>
+          )}
+        </Box>
+      );
+    }
   }
+}
+
+function formatBrief(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+function firstLines(s: string, max: number): string {
+  const lines = s.split("\n").slice(0, max);
+  if (s.split("\n").length > max) lines.push("…");
+  return lines.join("\n");
 }
 
 const PREVIEW_LINES = 5;

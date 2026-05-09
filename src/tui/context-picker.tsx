@@ -23,6 +23,8 @@ interface ContextPickerProps {
    * with the proxy-vs-server drift surfaced explicitly.
    */
   tokensUsed: number;
+  /** Force-compact the session. Wired by app.tsx; bound to `c` in the overview. */
+  onCompact: () => void | Promise<void>;
   onCancel: () => void;
 }
 
@@ -179,6 +181,10 @@ export function ContextPicker(props: ContextPickerProps) {
         onPerTool={() => setView({ kind: 'per_tool', idx: 0 })}
         onLargest={() => setView({ kind: 'largest', idx: 0 })}
         onRefresh={() => refresh()}
+        onCompact={async () => {
+          props.onCancel();
+          await props.onCompact();
+        }}
         onCancel={props.onCancel}
         toolGroupCount={toolGroups.length}
       />
@@ -214,6 +220,7 @@ function OverviewView({
   onPerTool,
   onLargest,
   onRefresh,
+  onCompact,
   onCancel,
   toolGroupCount,
 }: {
@@ -223,6 +230,7 @@ function OverviewView({
   onPerTool: () => void;
   onLargest: () => void;
   onRefresh: () => void;
+  onCompact: () => void | Promise<void>;
   onCancel: () => void;
   toolGroupCount: number;
 }) {
@@ -241,6 +249,10 @@ function OverviewView({
     }
     if (input === 'r') {
       onRefresh();
+      return;
+    }
+    if (input === 'c') {
+      void onCompact();
     }
   });
 
@@ -305,7 +317,7 @@ function OverviewView({
       </Box>
       <Box marginTop={1}>
         <Text color="gray">
-          t per-tool · l largest · r refresh · esc close
+          t per-tool · l largest · c compact · r refresh · esc close
         </Text>
       </Box>
     </Box>

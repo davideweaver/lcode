@@ -18,4 +18,10 @@ export type UiBlock =
     }
   | { kind: 'result'; subtype: string; text?: string }
   | { kind: 'error'; text: string }
-  | { kind: 'slash_output'; text: string };
+  | { kind: 'slash_output'; text: string }
+  | {
+      kind: 'compaction';
+      subtype: 'tier1' | 'tier2';
+      savedTokens: number;
+      summary?: string;
+    };

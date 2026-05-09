@@ -10,7 +10,9 @@ import type {
   ToolUseBlock,
 } from './messages.js';
 import { textBlock, toolResultBlock } from './messages.js';
-import { runCompletion, streamLlm, type LlmFinalMessage } from './llm.js';
+import { runCompletion, streamLlm, toOpenAITools, type LlmFinalMessage } from './llm.js';
+import { compact } from './compactor.js';
+import { estimateTokens } from '../tui/tokens.js';
 import { newSessionState, type SessionState, type Tool } from '../tools/types.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt } from '../prompts/system.js';
@@ -34,6 +36,12 @@ export interface LoopArgs {
   claudeMdFiles?: ClaudeMdFile[];
   /** Surfaced into ToolContext for WebSearch. */
   searxngUrl?: string;
+  /** Window size for the compaction threshold. Falls back to a no-op large value when omitted. */
+  contextWindow?: number;
+  /** Fraction of contextWindow that triggers auto-compaction. */
+  compactThreshold?: number;
+  /** Recent user/assistant turn boundaries kept verbatim through tier-2 summarization. */
+  compactPreserveTail?: number;
 }
 
 export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
@@ -62,6 +70,15 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
     permissionMode: args.permissionMode,
     claudeMdFiles: args.claudeMdFiles,
   });
+
+  // Compaction overhead — system prompt + tool schemas. Computed once
+  // because they don't change across the loop's iterations. Used by the
+  // compactor to reason about *real* prompt size, not just history.
+  const compactOverheadTokens =
+    estimateTokens(systemPrompt) +
+    (enabledTools.length > 0
+      ? estimateTokens(JSON.stringify(toOpenAITools(enabledTools)))
+      : 0);
 
   const history: AnthropicMessage[] = [
     ...args.initialMessages,
@@ -104,6 +121,51 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       return;
     }
     numTurns++;
+
+    // Auto-compaction. Cheap when under threshold (one BPE pass over history).
+    // We mutate `history` in place via reassignment so subsequent turns see
+    // the compacted state, and yield a marker so the caller (query) persists
+    // the compaction event into the JSONL for --resume.
+    if (args.contextWindow && args.compactThreshold) {
+      try {
+        const result = await compact(history, {
+          contextWindow: args.contextWindow,
+          threshold: args.compactThreshold,
+          overheadTokens: compactOverheadTokens,
+          preserveTail: args.compactPreserveTail ?? 2,
+          runCompletion: ({ systemPrompt = '', userPrompt, signal }) =>
+            runCompletion({
+              baseUrl: args.baseUrl,
+              apiKey: args.apiKey,
+              model: args.model,
+              systemPrompt,
+              userPrompt,
+              signal: signal ?? args.signal,
+            }),
+          signal: args.signal,
+        });
+        if (result.tier !== 'noop') {
+          history.length = 0;
+          for (const m of result.history) history.push(m);
+          yield {
+            type: 'compaction',
+            session_id: args.sessionId,
+            subtype: result.tier,
+            saved_tokens: result.savedTokens,
+            summary: result.summary,
+            truncated_tool_use_ids: result.truncatedToolUseIds,
+          };
+        }
+      } catch (err) {
+        // Compaction failures should never crash the agent loop. Surface as
+        // an assistant text? No — that'd confuse the model. Just swallow and
+        // let the request proceed; if it overflows, the LLM error message
+        // will still surface to the user via the normal error path.
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error(`[lcode] compaction failed: ${msg}`);
+      }
+    }
 
     let final: LlmFinalMessage;
     try {

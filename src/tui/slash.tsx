@@ -22,6 +22,12 @@ export interface SlashContext {
   openMcpPicker: () => void;
   openContextPicker: () => void;
   /**
+   * Force-compact the current session. Loads the JSONL, runs the compactor
+   * with `force: true`, appends a marker. Emits a `compaction` block on
+   * success and a `slash_output` block describing the outcome.
+   */
+  runCompactNow: () => Promise<void>;
+  /**
    * Manager for MCP server connections. Always present at runtime; the App
    * instantiates a single manager at session start and shares it here.
    */
@@ -138,6 +144,13 @@ export const COMMANDS: SlashCommand[] = [
     description: 'Show how the context window is being spent.',
     execute: (_args, ctx) => {
       ctx.openContextPicker();
+    },
+  },
+  {
+    name: 'compact',
+    description: 'Free up context: truncate old tool results, summarize if still over.',
+    execute: async (_args, ctx) => {
+      await ctx.runCompactNow();
     },
   },
   {

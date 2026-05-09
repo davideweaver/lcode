@@ -8,6 +8,7 @@ import { loadMcpServers } from '../mcp/config.js';
 import { McpManager } from '../mcp/manager.js';
 import type { McpServerConfig } from '../mcp/types.js';
 import type { AnthropicMessage, SDKMessage } from './messages.js';
+import { replayHistoryForCompact } from './compactor.js';
 import { runLoop } from './loop.js';
 import {
   appendMessage,
@@ -64,6 +65,7 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     model: options.model ?? options.config?.model ?? baseConfig.model,
     apiKey: options.config?.apiKey ?? baseConfig.apiKey,
     contextWindow: options.config?.contextWindow ?? baseConfig.contextWindow,
+    compactThreshold: options.config?.compactThreshold ?? baseConfig.compactThreshold,
     searxngUrl: options.config?.searxngUrl ?? baseConfig.searxngUrl,
   };
 
@@ -120,6 +122,8 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     sessionState: replayedSessionState,
     claudeMdFiles,
     searxngUrl: config.searxngUrl,
+    contextWindow: config.contextWindow,
+    compactThreshold: config.compactThreshold,
   });
 
   try {
@@ -195,25 +199,19 @@ async function replayHistory(
   cwd: string,
 ): Promise<{ initialMessages: AnthropicMessage[]; replayedSessionState: ReturnType<typeof newSessionState> }> {
   const messages = await loadSessionMessages(sessionId, cwd);
-  const out: AnthropicMessage[] = [];
+  const initialMessages = replayHistoryForCompact(messages);
   const sessionState = newSessionState();
+  // Replay file reads so Edit's "must Read first" rule survives resume.
+  // We can't reconstruct exact paths from tool_results without parsing;
+  // a simpler approximation: scan tool_use inputs for file_path keys.
   for (const m of messages) {
-    if (m.type === 'assistant') {
-      out.push({ role: 'assistant', content: m.message.content });
-    } else if (m.type === 'user') {
-      out.push({ role: 'user', content: m.message.content });
-    }
-    // Replay file reads so Edit's "must Read first" rule survives resume.
-    // We can't reconstruct exact paths from tool_results without parsing;
-    // a simpler approximation: scan tool_use inputs for file_path keys.
-    if (m.type === 'assistant') {
-      for (const block of m.message.content) {
-        if (block.type === 'tool_use' && block.name === 'Read') {
-          const fp = (block.input as { file_path?: unknown }).file_path;
-          if (typeof fp === 'string') sessionState.readFiles.add(fp);
-        }
+    if (m.type !== 'assistant') continue;
+    for (const block of m.message.content) {
+      if (block.type === 'tool_use' && block.name === 'Read') {
+        const fp = (block.input as { file_path?: unknown }).file_path;
+        if (typeof fp === 'string') sessionState.readFiles.add(fp);
       }
     }
   }
-  return { initialMessages: out, replayedSessionState: sessionState };
+  return { initialMessages, replayedSessionState: sessionState };
 }

@@ -16,6 +16,7 @@ import { ModelPicker } from './model-picker.js';
 import { McpPicker } from './mcp-picker.js';
 import { ContextPicker } from './context-picker.js';
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js';
+import { manualCompact } from '../core/compactor.js';
 import {
   getSlashQuery,
   isSlashPopupOpen,
@@ -73,6 +74,10 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   const [turnStatus, setTurnStatus] = useState<TurnStatus>({ kind: 'idle' });
   const [sessionId, setSessionId] = useState<string | undefined>(resume);
   const [tokensUsed, setTokensUsed] = useState(SYSTEM_PROMPT_TOKEN_ESTIMATE);
+  // The local BPE estimate is a proxy until the first assistant turn re-snaps
+  // it to the server's `usage.input_tokens`. Until then the statusline shows
+  // an empty bar and "—%" so we don't lie about the actual prompt size.
+  const [tokensUsedVerified, setTokensUsedVerified] = useState(false);
   const [branch, setBranch] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const [slashIdx, setSlashIdx] = useState(0);
@@ -137,13 +142,10 @@ export function App({ config, resume, onSessionChange }: AppProps) {
     async (resumeId: string, sessionCwd: string) => {
       const messages = await loadSessionMessages(resumeId, sessionCwd);
       const replayed = messagesToBlocks(messages);
-      const replayedTokens = messages.reduce(
-        (sum, m) => sum + sdkMessageTokens(m),
-        0,
-      );
       setBlocks(replayed);
       setSessionId(resumeId);
-      setTokensUsed(SYSTEM_PROMPT_TOKEN_ESTIMATE + replayedTokens);
+      setTokensUsed(restoreTokensUsed(messages));
+      setTokensUsedVerified(false);
       setTurnStatus({ kind: 'idle' });
       historyRef.current = extractUserPrompts(messages);
       setHistoryIdx(null);
@@ -187,7 +189,14 @@ export function App({ config, resume, onSessionChange }: AppProps) {
 
   useEffect(() => {
     const ctl = new AbortController();
-    probeLlm(config, ctl.signal, currentModel).then(setHealth);
+    probeLlm(config, ctl.signal, currentModel).then((h) => {
+      setHealth(h);
+      // Probe done = the model is "ready" from the user's POV. Even before
+      // the first server snap we have a usable local BPE estimate, so let
+      // the statusline come out of "—%" mode now. The first assistant turn
+      // will subsequently re-snap to ground truth.
+      setTokensUsedVerified(true);
+    });
     return () => ctl.abort();
   }, [config, currentModel]);
 
@@ -195,6 +204,57 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   // statusline reflects the model's actual context size after the user
   // restarts llama.cpp with a different ctx.
   const effectiveContextWindow = health?.contextWindow ?? config.contextWindow;
+
+  const runCompactNow = useCallback(async () => {
+    if (!sessionId) {
+      setBlocks((b) => [
+        ...b,
+        { kind: 'slash_output', text: '* nothing to compact yet — send a prompt first.' },
+      ]);
+      return;
+    }
+    setBlocks((b) => [
+      ...b,
+      { kind: 'slash_output', text: '* compacting…' },
+    ]);
+    try {
+      const ctl = new AbortController();
+      const result = await manualCompact({
+        sessionId,
+        cwd,
+        baseUrl: config.llmUrl,
+        apiKey: config.apiKey,
+        model: currentModel,
+        contextWindow: effectiveContextWindow,
+        threshold: config.compactThreshold,
+        signal: ctl.signal,
+      });
+      if (result.tier === 'noop') {
+        setBlocks((b) => [
+          ...b,
+          { kind: 'slash_output', text: '* nothing to compact (history is too short or already compacted).' },
+        ]);
+        return;
+      }
+      const tier: 'tier1' | 'tier2' = result.tier;
+      setTokensUsed((t) => Math.max(0, t - result.savedTokens));
+      setBlocks((b) => [
+        ...b,
+        {
+          kind: 'compaction',
+          subtype: tier,
+          savedTokens: result.savedTokens,
+          summary: result.summary,
+        },
+      ]);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setBlocks((b) => [
+        ...b,
+        { kind: 'error', text: `compaction failed: ${msg}` },
+      ]);
+    }
+  }, [sessionId, cwd, config, currentModel, effectiveContextWindow]);
 
   useEffect(() => {
     getGitBranch(cwd).then(setBranch);
@@ -390,12 +450,14 @@ export function App({ config, resume, onSessionChange }: AppProps) {
             setBlocks([]);
             setSessionId(undefined);
             setTokensUsed(SYSTEM_PROMPT_TOKEN_ESTIMATE);
+            setTokensUsedVerified(false);
             setTurnStatus({ kind: 'idle' });
           },
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
           openMcpPicker: () => setMcpPickerOpen(true),
           openContextPicker: () => setContextPickerOpen(true),
+          runCompactNow,
           mcpManager: mcpManagerRef.current!,
           exit,
         });
@@ -421,11 +483,15 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           abortController: ctl,
           resume: sessionId,
           includePartialMessages: true,
-          config,
+          // Override config.contextWindow with the probed n_ctx so the
+          // auto-compaction threshold matches the actual server limit, not
+          // the env-var fallback. Without this, compaction never fires when
+          // the loaded model has a smaller window than LCODE_CONTEXT_WINDOW.
+          config: { ...config, contextWindow: effectiveContextWindow },
           claudeMdFiles,
           mcpManager: mcpManagerRef.current!,
         });
-        await drainStream(stream, setBlocks, setSessionId, setTokensUsed);
+        await drainStream(stream, setBlocks, setSessionId, setTokensUsed, setTokensUsedVerified);
       } catch (err) {
         // Suppress error rendering when the user cancelled — the
         // "Interrupted" status replaces it.
@@ -526,6 +592,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           cwd={cwd}
           contextWindow={effectiveContextWindow}
           tokensUsed={tokensUsed}
+          onCompact={runCompactNow}
           onCancel={() => setContextPickerOpen(false)}
         />
       ) : (
@@ -556,6 +623,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
               folderLabel={folderLabel}
               branch={branch}
               tokensUsed={tokensUsed}
+              tokensUsedVerified={tokensUsedVerified}
               contextWindow={effectiveContextWindow}
               sessionId={sessionId}
               showThinking={showThinking}
@@ -582,6 +650,7 @@ async function drainStream(
   setBlocks: React.Dispatch<React.SetStateAction<UiBlock[]>>,
   setSessionId: (id: string) => void,
   setTokensUsed: React.Dispatch<React.SetStateAction<number>>,
+  setTokensUsedVerified: React.Dispatch<React.SetStateAction<boolean>>,
 ) {
   for await (const msg of stream) {
     // Snap the meter to the server-reported prompt size on every assistant
@@ -596,6 +665,7 @@ async function drainStream(
       const outTokens = sdkMessageTokens(msg);
       if (typeof reported === 'number' && reported > 0) {
         setTokensUsed(reported + outTokens);
+        setTokensUsedVerified(true);
       } else {
         setTokensUsed((t) => t + outTokens);
       }
@@ -659,6 +729,21 @@ async function drainStream(
           { kind: 'result', subtype: msg.subtype, text: msg.error ?? msg.result },
         ]);
         break;
+      case 'compaction':
+        // Drop the meter by the locally-estimated saved tokens. The next
+        // assistant turn re-snaps to server truth, so any drift here gets
+        // corrected on the next response.
+        setTokensUsed((t) => Math.max(0, t - msg.saved_tokens));
+        setBlocks((b) => [
+          ...b,
+          {
+            kind: 'compaction',
+            subtype: msg.subtype,
+            savedTokens: msg.saved_tokens,
+            summary: msg.summary,
+          },
+        ]);
+        break;
     }
   }
 }
@@ -697,6 +782,40 @@ function finalizeStreamingThinking(blocks: UiBlock[]): UiBlock[] {
     if (b.kind !== 'thinking' || !b.streaming) return b;
     return { ...b, streaming: false, durationMs: Date.now() - b.startedAt };
   });
+}
+
+/**
+ * Reconstruct `tokensUsed` from a session's JSONL after --resume.
+ *
+ * The server-reported `usage.input_tokens` lives on assistant SDK messages
+ * and is the most accurate snapshot of the prompt size at that point. We
+ * find the most-recent one and rebuild the meter as it would have been
+ * mid-session: server input + the assistant's own output (now in history)
+ * + BPE delta for any user messages (tool_results) that came after.
+ *
+ * Falls back to a pure local BPE estimate if no usage was recorded
+ * (legacy sessions or never-completed turns).
+ */
+function restoreTokensUsed(messages: SDKMessage[]): number {
+  let lastSnapIdx = -1;
+  let lastUsage = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.type === 'assistant' && m.message.usage?.input_tokens) {
+      lastSnapIdx = i;
+      lastUsage = m.message.usage.input_tokens;
+    }
+  }
+  if (lastSnapIdx < 0) {
+    // No server snap available — use a pure local estimate.
+    return messages.reduce((sum, m) => sum + sdkMessageTokens(m), 0);
+  }
+  const snapMsg = messages[lastSnapIdx]!;
+  let total = lastUsage + sdkMessageTokens(snapMsg);
+  for (let i = lastSnapIdx + 1; i < messages.length; i++) {
+    total += sdkMessageTokens(messages[i]!);
+  }
+  return total;
 }
 
 function reconcileToolInputs(

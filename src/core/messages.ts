@@ -115,12 +115,31 @@ export interface SDKResultMessage {
   error?: string;
 }
 
+/**
+ * Records a compaction event in the session JSONL so that --resume
+ * reconstructs the post-compaction history. Tier 1 truncates listed
+ * tool_results to stubs; Tier 2 replaces all prior assistant/user
+ * messages (above the preserved tail) with the synthesized summary.
+ */
+export interface SDKCompactionMessage {
+  type: 'compaction';
+  session_id: string;
+  subtype: 'tier1' | 'tier2';
+  /** Local BPE estimate of tokens reclaimed. Informational only. */
+  saved_tokens: number;
+  /** Tier 2: synthesized summary replacing the pre-tail conversation. */
+  summary?: string;
+  /** Tool_use ids whose results were truncated (Tier 1 + Tier 2). */
+  truncated_tool_use_ids: string[];
+}
+
 export type SDKMessage =
   | SDKSystemInitMessage
   | SDKAssistantMessage
   | SDKUserMessage
   | SDKPartialAssistantMessage
-  | SDKResultMessage;
+  | SDKResultMessage
+  | SDKCompactionMessage;
 
 export function textBlock(text: string): TextBlock {
   return { type: 'text', text };
