@@ -73,6 +73,10 @@ export async function* streamLlm(
   const body = {
     model: args.model,
     stream: true,
+    // OpenAI streaming spec: usage is only emitted in the final chunk when
+    // include_usage is set. Without it llama.cpp returns no usage at all,
+    // so the TUI meter has no ground-truth to snap to.
+    stream_options: { include_usage: true },
     temperature: args.temperature ?? 0.2,
     messages: anthropicToOpenAI(args.systemPrompt, args.messages),
     tools: args.tools.length > 0 ? toOpenAITools(args.tools) : undefined,

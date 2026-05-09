@@ -1,14 +1,14 @@
+import { encode } from 'gpt-tokenizer/encoding/o200k_base';
 import type { ContentBlock, SDKMessage } from '../core/messages.js';
 
-/**
- * Crude character-based token estimate. ~4 chars per token is a common
- * heuristic for English / code on BPE-style tokenizers (gemma, qwen, llama).
- *
- * It's not exact, but it's good enough to spot when context is filling up,
- * and it doesn't require shipping a tokenizer with the TUI.
- */
+// Real BPE token count via o200k_base — the modern 200k-vocab encoding.
+// Local models use their own tokenizers (Llama-3 / Qwen / Gemma); this is a
+// budget proxy, not a per-model exact match. Drift is bounded; compaction
+// thresholds reserve enough headroom that the proxy is good enough to drive
+// scheduling decisions.
 export function estimateTokens(s: string): number {
-  return Math.ceil(s.length / 4);
+  if (s.length === 0) return 0;
+  return encode(s).length;
 }
 
 export function contentBlockTokens(block: ContentBlock): number {

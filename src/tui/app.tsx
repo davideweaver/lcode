@@ -567,7 +567,22 @@ async function drainStream(
   setTokensUsed: React.Dispatch<React.SetStateAction<number>>,
 ) {
   for await (const msg of stream) {
-    if (msg.type === 'assistant' || msg.type === 'user') {
+    // Snap the meter to the server-reported prompt size on every assistant
+    // turn. `usage.input_tokens` is ground truth and includes the system
+    // prompt + tool schemas, which the local BPE estimate omits. We then
+    // add the assistant's own output content (which becomes part of the
+    // next round's input). For user messages (tool_results), keep the
+    // incremental BPE estimate — those blocks haven't reached the server
+    // yet, so the next assistant turn will re-snap and correct any drift.
+    if (msg.type === 'assistant') {
+      const reported = msg.message.usage?.input_tokens;
+      const outTokens = sdkMessageTokens(msg);
+      if (typeof reported === 'number' && reported > 0) {
+        setTokensUsed(reported + outTokens);
+      } else {
+        setTokensUsed((t) => t + outTokens);
+      }
+    } else if (msg.type === 'user') {
       setTokensUsed((t) => t + sdkMessageTokens(msg));
     }
     switch (msg.type) {
