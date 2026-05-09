@@ -192,19 +192,17 @@ function ServerListView({
 
   return (
     <Box flexDirection="column" paddingX={1}>
-      <Box marginBottom={1} flexDirection="column">
+      <Box marginBottom={1}>
         <Text bold color="cyan">
           Select MCP Server ({selectedIdx + 1} of {servers.length})
         </Text>
-        <Text color="gray">↑↓ navigate · enter for details · esc to cancel</Text>
       </Box>
-      <Divider />
       {visible.map((row, i) => {
         const idx = pageStart + i;
         const selected = idx === selectedIdx;
         const transport = (mcpManager.transportOf(row.name) ?? '?').padEnd(5);
         return (
-          <Box key={row.name} marginTop={i === 0 ? 1 : 0}>
+          <Box key={row.name}>
             <Text>
               <Text color={selected ? 'cyan' : undefined} bold={selected}>
                 {selected ? '› ' : '  '}
@@ -223,6 +221,9 @@ function ServerListView({
           <Text color="gray">  …{servers.length - pageStart - visible.length} more below</Text>
         </Box>
       )}
+      <Box marginTop={1}>
+        <Text color="gray">↑↓ navigate · enter for details · esc to cancel</Text>
+      </Box>
     </Box>
   );
 }
