@@ -39,6 +39,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
     ctx: {
       cwd: '/tmp/test',
       config,
+      contextWindow: config.contextWindow,
       sessionId: 'abc-123',
       currentModel: config.model,
       setCurrentModel: (m) => {

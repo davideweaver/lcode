@@ -5,29 +5,45 @@ export interface HealthResult {
   endpoint: string;
   modelLoaded: string | null;
   modelMatchesConfig: boolean;
+  /**
+   * Live context window reported by the LLM server (llama.cpp `/props`),
+   * or null if the server doesn't expose it. The TUI prefers this over the
+   * static `LCODE_CONTEXT_WINDOW` config so the meter reflects the actual
+   * loaded `n_ctx`.
+   */
+  contextWindow: number | null;
   error?: string;
 }
 
 export async function probeLlm(
   config: LcodeConfig,
   signal?: AbortSignal,
+  /**
+   * Model to probe `/props` for. Defaults to `config.model`. The TUI passes
+   * the live `currentModel` so switching models in the picker re-probes the
+   * matching backend.
+   */
+  model?: string,
 ): Promise<HealthResult> {
-  const url = `${config.llmUrl.replace(/\/$/, '')}/v1/models`;
+  const base = config.llmUrl.replace(/\/$/, '');
+  const headers = { Authorization: `Bearer ${config.apiKey}` };
+  const probedModel = model ?? config.model;
   try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${config.apiKey}` },
-      signal,
-    });
-    if (!res.ok) {
+    const [modelsRes, contextWindow] = await Promise.all([
+      fetch(`${base}/v1/models`, { headers, signal }),
+      probeContextWindow(base, probedModel, headers, signal),
+    ]);
+    if (!modelsRes.ok) {
       return {
         ok: false,
         endpoint: config.llmUrl,
         modelLoaded: null,
         modelMatchesConfig: false,
-        error: `HTTP ${res.status}`,
+        contextWindow,
+        error: `HTTP ${modelsRes.status}`,
       };
     }
-    const body = (await res.json()) as { data?: Array<{ id: string }> };
+    const body = (await modelsRes.json()) as { data?: Array<{ id: string }> };
     const ids = body.data?.map((m) => m.id) ?? [];
     const modelLoaded = ids[0] ?? null;
     return {
@@ -35,6 +51,7 @@ export async function probeLlm(
       endpoint: config.llmUrl,
       modelLoaded,
       modelMatchesConfig: ids.includes(config.model),
+      contextWindow,
     };
   } catch (err) {
     return {
@@ -42,8 +59,36 @@ export async function probeLlm(
       endpoint: config.llmUrl,
       modelLoaded: null,
       modelMatchesConfig: false,
+      contextWindow: null,
       error: err instanceof Error ? err.message : String(err),
     };
+  }
+}
+
+/**
+ * llama.cpp exposes the loaded slot's `n_ctx` at `/props` (not under /v1).
+ * Returns null on any failure — the caller falls back to config. The
+ * `?model=` query is honored by the llamacpp-router proxy to pick the
+ * right backend; raw llama.cpp ignores it.
+ */
+async function probeContextWindow(
+  base: string,
+  model: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  try {
+    const url = `${base}/props?model=${encodeURIComponent(model)}`;
+    const res = await fetch(url, { headers, signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      default_generation_settings?: { n_ctx?: number };
+      n_ctx?: number;
+    };
+    const n = body.default_generation_settings?.n_ctx ?? body.n_ctx;
+    return typeof n === 'number' && n > 0 ? n : null;
+  } catch {
+    return null;
   }
 }
 

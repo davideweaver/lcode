@@ -6,6 +6,12 @@ import type { UiBlock } from './types.js';
 export interface SlashContext {
   cwd: string;
   config: LcodeConfig;
+  /**
+   * Effective context window in tokens — the live value probed from the
+   * LLM server, falling back to `config.contextWindow`. Use this (not
+   * `config.contextWindow`) when reporting the active window to the user.
+   */
+  contextWindow: number;
   sessionId?: string;
   currentModel: string;
   setCurrentModel: (model: string) => void;
@@ -59,7 +65,8 @@ export const COMMANDS: SlashCommand[] = [
     name: 'model',
     description: 'Show the active model, or pick / set a different one.',
     execute: (args, ctx) => {
-      const { llmUrl, contextWindow } = ctx.config;
+      const { llmUrl } = ctx.config;
+      const { contextWindow } = ctx;
       const requested = args.trim();
       if (requested) {
         ctx.setCurrentModel(requested);

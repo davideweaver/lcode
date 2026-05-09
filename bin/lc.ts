@@ -5,7 +5,6 @@ import { createElement } from 'react';
 import { loadConfig } from '../src/config.js';
 import { probeLlm } from '../src/health.js';
 import { App } from '../src/tui/app.js';
-import { renderBanner } from '../src/tui/banner.js';
 import { detectTerminalTheme } from '../src/tui/theme-detect.js';
 
 const program = new Command();
@@ -23,7 +22,7 @@ program
     // exchange has to finish before render() runs, so we await here. If
     // detection fails the helper resolves to 'dark'.
     process.env.LCODE_THEME = await detectTerminalTheme();
-    process.stdout.write('\n' + renderBanner(config, process.cwd()) + '\n\n');
+    process.stdout.write('\n');
 
     let lastSessionId: string | undefined = opts.resume;
     // exitOnCtrlC: false — App owns Ctrl+C handling (single press cancels

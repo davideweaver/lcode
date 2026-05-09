@@ -6,6 +6,7 @@ import type { LcodeConfig } from '../config.js';
 import { probeLlm, type HealthResult } from '../health.js';
 import { query } from '../core/query.js';
 import type { SDKMessage } from '../core/messages.js';
+import { Banner } from './banner.js';
 import { BlockList } from './blocks.js';
 import { Divider } from './divider.js';
 import { getGitBranch } from './git.js';
@@ -30,7 +31,7 @@ import { loadMcpServers } from '../mcp/config.js';
 import { loadDisabledServers } from '../mcp/disabled.js';
 import { McpManager } from '../mcp/manager.js';
 
-type HeaderItem = { kind: 'health'; health: HealthResult };
+type HeaderItem = { kind: 'banner'; health: HealthResult };
 
 type TurnStatus =
   | { kind: 'idle' }
@@ -183,9 +184,14 @@ export function App({ config, resume, onSessionChange }: AppProps) {
 
   useEffect(() => {
     const ctl = new AbortController();
-    probeLlm(config, ctl.signal).then(setHealth);
+    probeLlm(config, ctl.signal, currentModel).then(setHealth);
     return () => ctl.abort();
-  }, [config]);
+  }, [config, currentModel]);
+
+  // Prefer the live `n_ctx` from `/props` over the static config so the
+  // statusline reflects the model's actual context size after the user
+  // restarts llama.cpp with a different ctx.
+  const effectiveContextWindow = health?.contextWindow ?? config.contextWindow;
 
   useEffect(() => {
     getGitBranch(cwd).then(setBranch);
@@ -372,6 +378,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         await maybeRunSlashCommand(trimmed, {
           cwd,
           config,
+          contextWindow: effectiveContextWindow,
           sessionId,
           currentModel,
           setCurrentModel,
@@ -434,11 +441,11 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         abortRef.current = null;
       }
     },
-    [busy, config, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit, replaceInput],
+    [busy, config, effectiveContextWindow, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit, replaceInput],
   );
 
   const headerItems = useMemo<HeaderItem[]>(() => {
-    return health ? [{ kind: 'health', health }] : [];
+    return health ? [{ kind: 'banner', health }] : [];
   }, [health]);
 
   return (
@@ -446,10 +453,15 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       <Static items={headerItems}>
         {(item, i) => (
           <Box key={i}>
-            <HealthLine health={item.health} configuredModel={config.model} />
+            <Banner config={config} cwd={cwd} health={item.health} />
           </Box>
         )}
       </Static>
+
+      {/* Live banner with spinner while the probe is in flight; once
+          health resolves, the Static slot above commits the final
+          banner (with badge) into scrollback and this stops rendering. */}
+      {health === null && <Banner config={config} cwd={cwd} health={null} />}
 
       <BlockList blocks={blocks} showThinking={showThinking} />
 
@@ -527,7 +539,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
               folderLabel={folderLabel}
               branch={branch}
               tokensUsed={tokensUsed}
-              contextWindow={config.contextWindow}
+              contextWindow={effectiveContextWindow}
               sessionId={sessionId}
               showThinking={showThinking}
             />
@@ -692,22 +704,3 @@ function applyToolResults(
   });
 }
 
-function HealthLine({
-  health,
-  configuredModel,
-}: {
-  health: HealthResult | null;
-  configuredModel: string;
-}) {
-  if (health === null) return <Text color="yellow">probing…</Text>;
-  if (!health.ok) return <Text color="red">✗ unreachable: {health.error ?? 'unknown'}</Text>;
-  if (!health.modelMatchesConfig) {
-    return (
-      <Text color="yellow">
-        ⚠ reachable; "{configuredModel}" not loaded
-        {health.modelLoaded ? ` (loaded: ${health.modelLoaded})` : ''}
-      </Text>
-    );
-  }
-  return <Text color="green">✓ ready: {configuredModel}</Text>;
-}
