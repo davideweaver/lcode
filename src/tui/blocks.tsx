@@ -104,6 +104,23 @@ function BlockView({
           </Box>
         );
       }
+      if (block.name === "WebSearch") {
+        const query = typeof block.input.query === "string" ? block.input.query : "";
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={color}>
+              {indicator} <Text bold>Web Search</Text>
+              <Text color={MUTED}>(&quot;{query}&quot;)</Text>
+            </Text>
+            <WebSearchOutput
+              query={query}
+              status={block.status}
+              result={block.result ?? ""}
+              expanded={showThinking}
+            />
+          </Box>
+        );
+      }
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text color={color}>
@@ -238,6 +255,46 @@ function McpToolOutput({
       </Text>
       {truncated && (
         <Text color={MUTED}>  (ctrl+o to expand)</Text>
+      )}
+    </Box>
+  );
+}
+
+function WebSearchOutput({
+  query,
+  status,
+  result,
+  expanded,
+}: {
+  query: string;
+  status: "pending" | "done" | "error";
+  result: string;
+  expanded: boolean;
+}) {
+  let summary: string;
+  if (status === "pending") {
+    summary = `Searching for "${query}"`;
+  } else if (status === "error") {
+    const flat = result.replace(/\s+/g, " ").trim();
+    summary = flat || `Search failed for "${query}"`;
+  } else {
+    const count = (result.match(/^\d+\.\s/gm) || []).length;
+    summary =
+      count > 0
+        ? `Found ${count} result${count === 1 ? "" : "s"} for "${query}"`
+        : `No results for "${query}"`;
+  }
+  return (
+    <Box flexDirection="column" marginLeft={2}>
+      <Text color={MUTED}>└ {summary}</Text>
+      {expanded && status === "done" && result.trim() !== "" && (
+        <Box flexDirection="column" marginLeft={2}>
+          {result.split("\n").map((line, i) => (
+            <Text key={i} color={MUTED}>
+              {line || " "}
+            </Text>
+          ))}
+        </Box>
       )}
     </Box>
   );
