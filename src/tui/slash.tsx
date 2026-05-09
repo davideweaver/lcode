@@ -20,6 +20,7 @@ export interface SlashContext {
   openResumePicker: () => void;
   openModelPicker: () => void;
   openMcpPicker: () => void;
+  openContextPicker: () => void;
   /**
    * Manager for MCP server connections. Always present at runtime; the App
    * instantiates a single manager at session start and shares it here.
@@ -130,6 +131,13 @@ export const COMMANDS: SlashCommand[] = [
         return;
       }
       ctx.openMcpPicker();
+    },
+  },
+  {
+    name: 'context',
+    description: 'Show how the context window is being spent.',
+    execute: (_args, ctx) => {
+      ctx.openContextPicker();
     },
   },
   {

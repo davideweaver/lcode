@@ -14,6 +14,8 @@ import { extractUserPrompts, messagesToBlocks } from './replay.js';
 import { ResumePicker } from './resume-picker.js';
 import { ModelPicker } from './model-picker.js';
 import { McpPicker } from './mcp-picker.js';
+import { ContextPicker } from './context-picker.js';
+import { BUILTIN_TOOLS } from '../tools/builtin/index.js';
 import {
   getSlashQuery,
   isSlashPopupOpen,
@@ -78,6 +80,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [mcpPickerOpen, setMcpPickerOpen] = useState(false);
+  const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [currentModel, setCurrentModel] = useState(config.model);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [showThinking, setShowThinking] = useState(false);
@@ -392,6 +395,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
           openMcpPicker: () => setMcpPickerOpen(true),
+          openContextPicker: () => setContextPickerOpen(true),
           mcpManager: mcpManagerRef.current!,
           exit,
         });
@@ -510,6 +514,19 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         <McpPicker
           mcpManager={mcpManagerRef.current!}
           onCancel={() => setMcpPickerOpen(false)}
+        />
+      ) : contextPickerOpen ? (
+        <ContextPicker
+          blocks={blocks}
+          tools={[
+            ...BUILTIN_TOOLS,
+            ...(mcpManagerRef.current?.tools() ?? []),
+          ]}
+          claudeMdFiles={claudeMdFiles}
+          cwd={cwd}
+          contextWindow={effectiveContextWindow}
+          tokensUsed={tokensUsed}
+          onCancel={() => setContextPickerOpen(false)}
         />
       ) : (
         <>
