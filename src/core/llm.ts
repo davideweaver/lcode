@@ -391,9 +391,45 @@ export function toOpenAITools(tools: Tool[]) {
     function: {
       name: t.name,
       description: t.description,
-      parameters: zodToJsonSchema(t.inputSchema, { target: 'openApi3' }),
+      parameters: sanitizeSchemaForLlm(
+        t.inputJsonSchema ?? zodToJsonSchema(t.inputSchema, { target: 'openApi3' }),
+      ),
     },
   }));
+}
+
+/**
+ * Normalize JSON Schema shapes that local model chat templates can't render.
+ *
+ * Concretely: many MCP servers return `"type": ["string", "null"]` (a valid
+ * JSON-Schema 2020-12 form), but llama.cpp's bundled Gemma chat template
+ * does `value['type'] | upper`, which assumes a scalar string and crashes
+ * with "Unknown filter 'upper' for type Array". We collapse the array to
+ * a single scalar (preferring the first non-null entry) and set
+ * `nullable: true` if `null` was one of the options.
+ *
+ * We recurse into `properties`, `items`, and the combinator keywords so
+ * nested schemas are normalized too. Returns a new object — never mutates
+ * the input, so the original schema (used for tool dispatch / future
+ * consumers) stays intact.
+ */
+export function sanitizeSchemaForLlm(schema: unknown): unknown {
+  if (Array.isArray(schema)) return schema.map(sanitizeSchemaForLlm);
+  if (!schema || typeof schema !== 'object') return schema;
+  const src = schema as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (k === 'type' && Array.isArray(v)) {
+      const types = v.filter((t): t is string => typeof t === 'string');
+      const nonNull = types.filter((t) => t !== 'null');
+      if (nonNull.length > 0) out.type = nonNull[0];
+      else if (types.length > 0) out.type = types[0];
+      if (types.includes('null')) out.nullable = true;
+    } else {
+      out[k] = sanitizeSchemaForLlm(v);
+    }
+  }
+  return out;
 }
 
 async function* parseSseChunks(

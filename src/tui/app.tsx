@@ -25,6 +25,8 @@ import type { UiBlock } from './types.js';
 import { loadSessionMessages } from '../core/session.js';
 import type { SessionSummary } from '../core/sessions.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
+import { loadMcpServers } from '../mcp/config.js';
+import { McpManager } from '../mcp/manager.js';
 
 type HeaderItem = { kind: 'health'; health: HealthResult };
 
@@ -69,6 +71,12 @@ export function App({ config, resume }: AppProps) {
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [showThinking, setShowThinking] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // One MCP manager per chat session. Created lazily on first render so we
+  // can pass in discovered configs; cleaned up on unmount.
+  const mcpManagerRef = useRef<McpManager | null>(null);
+  if (mcpManagerRef.current === null) {
+    mcpManagerRef.current = new McpManager([]);
+  }
   // ink-text-input doesn't filter ctrl+letter combos, so the literal letter
   // would land in the input value. We set this flag in our useInput handler
   // before TextInput's handler runs; the next onChange consumes it.
@@ -148,6 +156,26 @@ export function App({ config, resume }: AppProps) {
   // effect until the user starts a new session.
   useEffect(() => {
     loadClaudeMdFiles(cwd).then(setClaudeMdFiles);
+  }, [cwd]);
+
+  // Load MCP server configs and connect once per chat session. We replace
+  // the manager here (rather than mutating the empty one created at first
+  // render) so the configs are baked in. Cleanup on unmount closes all
+  // transport connections (stdio subprocesses, SSE streams, etc.).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const configs = await loadMcpServers(cwd);
+      if (cancelled) return;
+      const manager = new McpManager(configs);
+      mcpManagerRef.current = manager;
+      await manager.start();
+    })();
+    return () => {
+      cancelled = true;
+      const m = mcpManagerRef.current;
+      if (m) void m.close();
+    };
   }, [cwd]);
 
   const lastEscRef = useRef<number>(0);
@@ -233,6 +261,7 @@ export function App({ config, resume }: AppProps) {
           },
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
+          mcpManager: mcpManagerRef.current!,
           exit,
         });
         return;
@@ -257,6 +286,7 @@ export function App({ config, resume }: AppProps) {
           includePartialMessages: true,
           config,
           claudeMdFiles,
+          mcpManager: mcpManagerRef.current!,
         });
         await drainStream(stream, setBlocks, setSessionId, setTokensUsed);
       } catch (err) {

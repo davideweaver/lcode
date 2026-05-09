@@ -60,4 +60,55 @@ describe('parseInline', () => {
       { kind: 'text', text: '5 * 3 = 15' },
     ]);
   });
+
+  it('parses [text](url) as a link span', () => {
+    expect(parseInline('see [the docs](https://example.com)')).toEqual([
+      { kind: 'text', text: 'see ' },
+      { kind: 'link', text: 'the docs', url: 'https://example.com' },
+    ]);
+  });
+
+  it('leaves bare brackets alone when not followed by (url)', () => {
+    expect(parseInline('an [array] of values')).toEqual([
+      { kind: 'text', text: 'an [array] of values' },
+    ]);
+  });
+
+  it('parses ***triple-asterisk*** as bold without leftover stars', () => {
+    expect(parseInline('***Heading***')).toEqual([
+      { kind: 'bold', text: 'Heading' },
+    ]);
+    expect(parseInline('a ***strong*** word')).toEqual([
+      { kind: 'text', text: 'a ' },
+      { kind: 'bold', text: 'strong' },
+      { kind: 'text', text: ' word' },
+    ]);
+  });
+
+  it('parses arbitrary-length asterisk runs (4+) as bold', () => {
+    expect(parseInline('****quad****')).toEqual([
+      { kind: 'bold', text: 'quad' },
+    ]);
+    expect(parseInline('*****five*****')).toEqual([
+      { kind: 'bold', text: 'five' },
+    ]);
+  });
+
+  it('handles mismatched-count asterisk runs (3 leading, 2 trailing)', () => {
+    expect(parseInline('***Section**')).toEqual([
+      { kind: 'bold', text: 'Section' },
+    ]);
+  });
+
+  it('parses links mixed with bold and code', () => {
+    expect(
+      parseInline('**bold** then [link](u) and `code`'),
+    ).toEqual([
+      { kind: 'bold', text: 'bold' },
+      { kind: 'text', text: ' then ' },
+      { kind: 'link', text: 'link', url: 'u' },
+      { kind: 'text', text: ' and ' },
+      { kind: 'code', text: 'code' },
+    ]);
+  });
 });

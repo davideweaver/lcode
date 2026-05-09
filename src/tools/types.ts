@@ -45,6 +45,12 @@ export interface Tool {
   name: string;
   description: string;
   inputSchema: z.ZodTypeAny;
+  /**
+   * Optional pre-built JSON Schema sent to the LLM in place of converting
+   * `inputSchema` via zod-to-json-schema. MCP-adapter tools set this from the
+   * server-provided schema (which doesn't round-trip cleanly through Zod).
+   */
+  inputJsonSchema?: object;
   handler: ErasedToolHandler;
   /** Read-only tools can run under permissionMode: 'plan' (Phase 2). */
   readOnly?: boolean;

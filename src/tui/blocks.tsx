@@ -87,6 +87,23 @@ function BlockView({
             ? "red"
             : "green";
       const indicator = block.status === "pending" ? "…" : "●";
+      const mcp = parseMcpName(block.name);
+      if (mcp) {
+        return (
+          <Box flexDirection="column" marginTop={1}>
+            <Text color={color}>
+              {indicator} Calling <Text bold>{mcp.server}</Text>
+              <Text color={MUTED}> · {mcp.tool}</Text>
+            </Text>
+            {block.status !== "pending" && (
+              <McpToolOutput
+                result={block.result ?? ""}
+                expanded={showThinking}
+              />
+            )}
+          </Box>
+        );
+      }
       return (
         <Box flexDirection="column" marginTop={1}>
           <Text color={color}>
@@ -177,6 +194,66 @@ function ToolOutputBody({
       )}
     </Box>
   );
+}
+
+/**
+ * Compact one-liner output for MCP tool calls. Newlines and whitespace are
+ * collapsed so a single quote-delimited preview wraps to the terminal
+ * naturally; long results get truncated with the ctrl+o hint.
+ */
+const MCP_PREVIEW_CHARS = 240;
+
+function McpToolOutput({
+  result,
+  expanded,
+}: {
+  result: string;
+  expanded: boolean;
+}) {
+  const flat = result.replace(/\s+/g, " ").trim();
+  if (flat === "") {
+    return (
+      <Box marginLeft={2}>
+        <Text color={MUTED}>└ (no output)</Text>
+      </Box>
+    );
+  }
+  if (expanded) {
+    return (
+      <Box flexDirection="column" marginLeft={2}>
+        {result.split("\n").map((line, i) => (
+          <Text key={i} color={MUTED}>
+            {line || " "}
+          </Text>
+        ))}
+      </Box>
+    );
+  }
+  const truncated = flat.length > MCP_PREVIEW_CHARS;
+  const preview = truncated ? flat.slice(0, MCP_PREVIEW_CHARS - 1) + "…" : flat;
+  return (
+    <Box marginLeft={2} flexDirection="column">
+      <Text color={MUTED}>
+        └ &quot;{preview}&quot;
+      </Text>
+      {truncated && (
+        <Text color={MUTED}>  (ctrl+o to expand)</Text>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * Split `mcp__<server>__<tool>` into its parts. Returns null for non-MCP
+ * tool names. Tool names may contain hyphens (e.g. `resolve-library-id`)
+ * but never `__` — anything after the second `__` is the tool name.
+ */
+export function parseMcpName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith("mcp__")) return null;
+  const rest = name.slice(5);
+  const idx = rest.indexOf("__");
+  if (idx < 0) return null;
+  return { server: rest.slice(0, idx), tool: rest.slice(idx + 2) };
 }
 
 function readOutputLineCount(result: string): number {

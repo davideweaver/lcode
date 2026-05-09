@@ -1,5 +1,6 @@
 import { Box, Text } from 'ink';
 import type { LcodeConfig } from '../config.js';
+import type { McpManager } from '../mcp/manager.js';
 import type { UiBlock } from './types.js';
 
 export interface SlashContext {
@@ -12,6 +13,11 @@ export interface SlashContext {
   clearSession: () => void;
   openResumePicker: () => void;
   openModelPicker: () => void;
+  /**
+   * Manager for MCP server connections. Always present at runtime; the App
+   * instantiates a single manager at session start and shares it here.
+   */
+  mcpManager: McpManager;
   exit: () => void;
 }
 
@@ -84,6 +90,47 @@ export const COMMANDS: SlashCommand[] = [
     description: 'Resume a previous session in this directory.',
     execute: (_args, ctx) => {
       ctx.openResumePicker();
+    },
+  },
+  {
+    name: 'mcp',
+    description: 'List configured MCP servers and their status. /mcp reload to reconnect.',
+    execute: async (args, ctx) => {
+      const sub = args.trim();
+      if (sub === 'reload') {
+        ctx.addBlock({ kind: 'slash_output', text: '* reloading MCP servers…' });
+        await ctx.mcpManager.reload();
+      } else if (sub && sub !== '') {
+        ctx.addBlock({
+          kind: 'slash_output',
+          text: `Unknown /mcp subcommand: ${sub}. Available: reload`,
+        });
+        return;
+      }
+      const status = ctx.mcpManager.status();
+      if (status.size === 0) {
+        ctx.addBlock({
+          kind: 'slash_output',
+          text:
+            'MCP servers: (none configured)\n\n' +
+            'Add servers to ~/.lcode/mcp.json or .mcp.json at the project root.',
+        });
+        return;
+      }
+      const nameWidth = Math.max(...[...status.keys()].map((n) => n.length), 6);
+      const lines = ['MCP servers:'];
+      for (const [name, st] of status) {
+        const transport = ctx.mcpManager.transportOf(name) ?? '?';
+        let detail: string;
+        if (st.state === 'ready') detail = `${st.toolCount} tools, ${st.latencyMs}ms`;
+        else if (st.state === 'failed') detail = `failed: ${st.error}`;
+        else detail = 'connecting…';
+        lines.push(
+          `  ${name.padEnd(nameWidth)}  ${transport.padEnd(5)}  ${st.state.padEnd(10)}  ${detail}`,
+        );
+      }
+      lines.push('', 'Subcommands: /mcp reload');
+      ctx.addBlock({ kind: 'slash_output', text: lines.join('\n') });
     },
   },
   {

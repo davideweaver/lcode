@@ -20,3 +20,13 @@ export type {
 } from './core/messages.js';
 export { BUILTIN_TOOLS } from './tools/builtin/index.js';
 export { loadConfig } from './config.js';
+export { McpManager } from './mcp/manager.js';
+export { loadMcpServers } from './mcp/config.js';
+export type {
+  McpServerConfig,
+  McpServerStatus,
+  McpTransport,
+  StdioMcpServerConfig,
+  HttpMcpServerConfig,
+  SseMcpServerConfig,
+} from './mcp/types.js';

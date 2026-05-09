@@ -4,6 +4,9 @@ import type { SdkMcpServerConfig, Tool } from '../tools/types.js';
 import { newSessionState } from '../tools/types.js';
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
+import { loadMcpServers } from '../mcp/config.js';
+import { McpManager } from '../mcp/manager.js';
+import type { McpServerConfig } from '../mcp/types.js';
 import type { AnthropicMessage, SDKMessage } from './messages.js';
 import { runLoop } from './loop.js';
 import {
@@ -24,7 +27,19 @@ export interface QueryOptions {
   abortController?: AbortController;
   resume?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
-  mcpServers?: SdkMcpServerConfig[];
+  /**
+   * Programmatic MCP server configurations. Mixed types accepted:
+   *   - `SdkMcpServerConfig`: inline tool list (no protocol connection)
+   *   - `McpServerConfig` (stdio | http | sse): real MCP server connected on demand
+   * In addition, lcode discovers servers from `~/.lcode/mcp.json`,
+   * `.mcp.json` at the project root, and `~/.claude.json`'s `mcpServers`.
+   * Set `loadMcpFromConfigFiles: false` to skip file-based discovery.
+   */
+  mcpServers?: (SdkMcpServerConfig | McpServerConfig)[];
+  /** Skip the file-based MCP discovery; only use `mcpServers`. Default: discover. */
+  loadMcpFromConfigFiles?: boolean;
+  /** Reuse a pre-started McpManager (e.g. one shared by the TUI across queries). */
+  mcpManager?: McpManager;
   includePartialMessages?: boolean;
   /** Override the LLM endpoint config (otherwise loaded from env). */
   config?: Partial<LcodeConfig>;
@@ -60,7 +75,25 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     ? await replayHistory(sessionId, cwd)
     : { initialMessages: [] as AnthropicMessage[], replayedSessionState: newSessionState() };
 
-  const tools = collectTools(options);
+  // Resolve MCP tools. Caller-supplied manager wins (so the TUI can share a
+  // single manager across queries). Otherwise: discover from files + merge in
+  // protocol-typed entries from `mcpServers`, then connect for the duration
+  // of this query. Inline `SdkMcpServerConfig` entries flatten into builtins.
+  const protocolConfigs = pickProtocolConfigs(options.mcpServers);
+  const inlineSdkConfigs = pickSdkConfigs(options.mcpServers);
+
+  const ownsManager = !options.mcpManager;
+  const fileConfigs =
+    ownsManager && options.loadMcpFromConfigFiles !== false
+      ? await loadMcpServers(cwd)
+      : [];
+  const allProtocolConfigs = mergeByName(fileConfigs, protocolConfigs);
+
+  const manager =
+    options.mcpManager ?? new McpManager(allProtocolConfigs);
+  if (ownsManager) await manager.start();
+
+  const tools = collectTools(options, manager.tools(), inlineSdkConfigs);
 
   const claudeMdFiles =
     options.claudeMdFiles ?? (await loadClaudeMdFiles(cwd));
@@ -86,18 +119,26 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     searxngUrl: config.searxngUrl,
   });
 
-  for await (const msg of generator) {
-    if (msg.type !== 'partial_assistant') {
-      await appendMessage(session, msg);
+  try {
+    for await (const msg of generator) {
+      if (msg.type !== 'partial_assistant') {
+        await appendMessage(session, msg);
+      }
+      yield msg;
     }
-    yield msg;
+  } finally {
+    if (ownsManager) await manager.close();
   }
 }
 
-function collectTools(options: QueryOptions): Tool[] {
+function collectTools(
+  options: QueryOptions,
+  fromMcpManager: Tool[],
+  fromInlineSdk: SdkMcpServerConfig[],
+): Tool[] {
   const fromBuiltins = BUILTIN_TOOLS;
-  const fromMcp = (options.mcpServers ?? []).flatMap((s) => s.tools);
-  const all = [...fromBuiltins, ...fromMcp];
+  const fromInline = fromInlineSdk.flatMap((s) => s.tools);
+  const all = [...fromBuiltins, ...fromInline, ...fromMcpManager];
   // dedupe by name (last wins)
   const byName = new Map<string, Tool>();
   for (const t of all) byName.set(t.name, t);
@@ -111,6 +152,39 @@ function collectTools(options: QueryOptions): Tool[] {
     filtered = filtered.filter((t) => !deny.has(t.name));
   }
   return filtered;
+}
+
+function pickProtocolConfigs(
+  servers: QueryOptions['mcpServers'],
+): McpServerConfig[] {
+  if (!servers) return [];
+  return servers.filter(
+    (s): s is McpServerConfig => s.type !== 'sdk',
+  );
+}
+
+function pickSdkConfigs(
+  servers: QueryOptions['mcpServers'],
+): SdkMcpServerConfig[] {
+  if (!servers) return [];
+  return servers.filter(
+    (s): s is SdkMcpServerConfig => s.type === 'sdk',
+  );
+}
+
+/**
+ * Merge two lists of MCP server configs by name. The first list takes
+ * precedence on conflict — used to give programmatic configs higher priority
+ * than file-based ones.
+ */
+function mergeByName(
+  base: McpServerConfig[],
+  override: McpServerConfig[],
+): McpServerConfig[] {
+  const byName = new Map<string, McpServerConfig>();
+  for (const c of base) byName.set(c.name, c);
+  for (const c of override) byName.set(c.name, c);
+  return [...byName.values()];
 }
 
 async function replayHistory(

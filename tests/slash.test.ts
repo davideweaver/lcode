@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LcodeConfig } from '../src/config.js';
+import { McpManager } from '../src/mcp/manager.js';
 import { matchCommands, maybeRunSlashCommand, type SlashContext } from '../src/tui/slash.js';
 import type { UiBlock } from '../src/tui/types.js';
 
@@ -44,6 +45,7 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
       clearSession: () => cleared.count++,
       openResumePicker: () => resumed.count++,
       openModelPicker: () => modelPicked.count++,
+      mcpManager: new McpManager([]),
       exit: () => exited.count++,
       ...overrides,
     },
