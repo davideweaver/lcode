@@ -390,6 +390,8 @@ export function App({ config, resume }: AppProps) {
           )}
         </>
       )}
+      {/* One-line gap so the bottom row is never flush with the terminal edge. */}
+      <Text> </Text>
     </Box>
   );
 }
