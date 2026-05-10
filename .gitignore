@@ -6,4 +6,6 @@ dist/
 *.log
 .vscode/
 .idea/
+.claude/
 coverage/
+keyprobe.js

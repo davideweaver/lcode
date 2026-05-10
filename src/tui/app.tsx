@@ -1,5 +1,5 @@
 import { Box, Static, Text, useApp, useInput } from 'ink';
-import TextInput from 'ink-text-input';
+import { MultilineInput } from './multiline-input.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { basename } from 'node:path';
 import type { LcodeConfig } from '../config.js';
@@ -113,17 +113,13 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   if (mcpManagerRef.current === null) {
     mcpManagerRef.current = new McpManager([]);
   }
-  // ink-text-input doesn't filter ctrl+letter combos, so the literal letter
-  // would land in the input value. We set this flag in our useInput handler
-  // before TextInput's handler runs; the next onChange consumes it.
-  const swallowInputChange = useRef(false);
-
+  // MultilineInput drops ctrl/meta combos itself, so the parent no longer
+  // needs to filter them out of onChange. Kept the inputKey bump approach so
+  // history nav / tab-complete reset the cursor cleanly via remount.
   /**
-   * Replace the input value externally and remount TextInput so the cursor
+   * Replace the input value externally and remount the input so the cursor
    * lands at the end of the new value. Used by Tab autocomplete and ESC-ESC
-   * clear. ink-text-input's controlled mode doesn't reposition the cursor
-   * when the parent grows the value, so a key bump is the cleanest fix
-   * without forking the dep.
+   * clear.
    */
   const replaceInput = useCallback((next: string) => {
     setInput(next);
@@ -131,12 +127,14 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   }, []);
 
   const handleInputChange = useCallback((next: string) => {
-    if (swallowInputChange.current) {
-      swallowInputChange.current = false;
-      return;
-    }
     setInput(next);
   }, []);
+
+  // Set by MultilineInput when it consumes an Alt+Enter / Shift+Enter
+  // sequence at the byte level. Resets on the next microtask. While set, the
+  // useInput handler below bails so the leftover events Ink still dispatches
+  // for that data chunk (ESC, stray text) don't trigger our shortcuts.
+  const inputConsumedRef = useRef(false);
 
   // Shared logic between the in-TUI /resume picker and the CLI --resume
   // flag: load the session's JSONL, replay blocks, restore token count, and
@@ -202,6 +200,31 @@ export function App({ config, resume, onSessionChange }: AppProps) {
     });
     return () => ctl.abort();
   }, [config, currentModel]);
+
+  // Opt the terminal into xterm modifyOtherKeys mode 1 so Shift+Enter sends
+  // a distinct sequence (`\x1b[27;2;13~`) instead of being indistinguishable
+  // from plain Enter (`\r`). MultilineInput detects that sequence and
+  // inserts a newline. We use mode 1 specifically — it leaves unmodified
+  // keys as legacy bytes, which keeps Ink's keypress parser working for
+  // Enter/Backspace/arrows. Also push the kitty progressive-enhancement
+  // flag (CSI > 1 u → \x1b[>1u disambiguate); supporting terminals often
+  // accept both, and modeling after Codex's `keyboard_modes.rs`.
+  // Sequences are silently ignored on terminals that don't implement them
+  // (e.g. macOS Terminal.app); those users can still use Ctrl+J or `\<Enter>`.
+  useEffect(() => {
+    if (!process.stdout.isTTY) return;
+    process.stdout.write('\x1b[>4;1m');
+    const cleanup = () => {
+      if (process.stdout.isTTY) {
+        process.stdout.write('\x1b[>4;0m');
+      }
+    };
+    process.on('exit', cleanup);
+    return () => {
+      cleanup();
+      process.off('exit', cleanup);
+    };
+  }, []);
 
   // Prefer the live `n_ctx` from `/props` over the static config so the
   // statusline reflects the model's actual context size after the user
@@ -356,6 +379,10 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   const lastCtrlCRef = useRef<number>(0);
   useInput(
     (inputChar, key) => {
+      // MultilineInput consumed a Shift/Alt+Enter byte sequence — drop the
+      // residual events Ink dispatched for the same chunk so we don't, e.g.,
+      // double-tap-clear on the leading ESC.
+      if (inputConsumedRef.current) return;
       if (key.ctrl && inputChar === 'c') {
         if (busy) {
           // First Ctrl+C while working cancels the turn — same as ESC.
@@ -376,12 +403,6 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         return;
       }
       if (key.ctrl && inputChar === 'o') {
-        swallowInputChange.current = true;
-        // Clear at end of tick so a future stray keystroke isn't dropped
-        // (e.g. on terminals that don't emit a literal "o" for ctrl+o).
-        queueMicrotask(() => {
-          swallowInputChange.current = false;
-        });
         setShowThinking((s) => !s);
         return;
       }
@@ -418,8 +439,10 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         }
       }
       // Prompt history navigation (up = older, down = newer). Only active
-      // when not busy and the slash popup isn't claiming the arrow keys.
-      if (!busy && !slashOpen) {
+      // when not busy, the slash popup isn't claiming the arrows, and the
+      // input is single-line — multi-line inputs use up/down to move the
+      // cursor between lines (handled inside MultilineInput).
+      if (!busy && !slashOpen && !input.includes('\n')) {
         const history = historyRef.current;
         if (key.upArrow && history.length > 0) {
           if (historyIdx === null) {
@@ -634,16 +657,15 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         <>
           <Box>
             {process.stdin.isTTY ? (
-              <Box>
-                <Text color={busy ? 'gray' : 'cyan'}>› </Text>
-                <TextInput
-                  key={inputKey}
-                  value={input}
-                  onChange={handleInputChange}
-                  onSubmit={onSubmit}
-                  focus={!busy}
-                />
-              </Box>
+              <MultilineInput
+                key={inputKey}
+                value={input}
+                onChange={handleInputChange}
+                onSubmit={onSubmit}
+                focus={!busy}
+                promptColor={busy ? 'gray' : 'cyan'}
+                consumedRef={inputConsumedRef}
+              />
             ) : (
               <Text dimColor>(non-interactive: stdin is not a TTY)</Text>
             )}
