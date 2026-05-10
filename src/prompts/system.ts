@@ -1,6 +1,7 @@
 import { platform, release } from 'node:os';
 import type { Tool } from '../tools/types.js';
 import { renderClaudeMdSection, type ClaudeMdFile } from './claudemd.js';
+import { defaultAgentFiles, type AgentFiles } from './agents.js';
 
 export interface SystemPromptArgs {
   cwd: string;
@@ -9,6 +10,8 @@ export interface SystemPromptArgs {
   permissionMode?: string;
   /** Loaded CLAUDE.md files (user + project + ancestor dirs). */
   claudeMdFiles?: ClaudeMdFile[];
+  /** Resolved agent-identity strings. Defaults to the built-in DEFAULT_*. */
+  agentFiles?: AgentFiles;
 }
 
 /**
@@ -17,13 +20,16 @@ export interface SystemPromptArgs {
  * repeat them here — just guidance about WHEN to use each tool.
  */
 export function buildSystemPrompt(args: SystemPromptArgs): string {
+  const agent = args.agentFiles ?? defaultAgentFiles();
   const sections: string[] = [];
 
-  sections.push(IDENTITY);
+  sections.push(section('Persona', agent.persona));
+  sections.push(section('Human', agent.human));
+  sections.push(section('Capabilities', agent.capabilities));
   sections.push(buildEnvironment(args));
   sections.push(buildToolGuidance(args.tools));
   if (args.permissionMode === 'plan') sections.push(PLAN_MODE);
-  sections.push(STYLE);
+  sections.push(section('Instructions', agent.instructions));
 
   if (args.claudeMdFiles && args.claudeMdFiles.length > 0) {
     sections.push(renderClaudeMdSection(args.claudeMdFiles));
@@ -36,9 +42,9 @@ export function buildSystemPrompt(args: SystemPromptArgs): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-const IDENTITY = `You are lcode, a local coding assistant running on a small open-weight model. \
-You behave like Claude Code: you read and edit files, run shell commands, and search the codebase to complete software engineering tasks. \
-You are not Claude. Be honest about that if asked.`;
+function section(header: string, body: string): string {
+  return `# ${header}\n${body.trim()}`;
+}
 
 function buildEnvironment(args: SystemPromptArgs): string {
   return [
@@ -69,11 +75,6 @@ function buildToolGuidance(tools: Tool[]): string {
 
 const PLAN_MODE = `# Plan mode active
 You may only read and search. Do not Write, Edit, or run Bash. Produce a plan, then stop.`;
-
-const STYLE = `# Style
-- Be terse. State what you're doing in one short sentence before tool calls when useful.
-- Don't narrate internal deliberation. Don't summarize what just happened — the user can see the tool results.
-- When you reference code, cite as path:line so the user can navigate.`;
 
 function shorten(s: string, max = 160): string {
   const trimmed = s.trim();

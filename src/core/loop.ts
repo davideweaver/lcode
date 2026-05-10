@@ -20,6 +20,7 @@ import { newSessionState, type SessionState, type Tool } from '../tools/types.js
 import { ToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 import type { ClaudeMdFile } from '../prompts/claudemd.js';
+import type { AgentFiles } from '../prompts/agents.js';
 
 export interface LoopArgs {
   sessionId: string;
@@ -37,6 +38,8 @@ export interface LoopArgs {
   permissionMode?: string;
   sessionState?: SessionState;
   claudeMdFiles?: ClaudeMdFile[];
+  /** Resolved agent-identity strings (persona/human/capabilities/instructions). */
+  agentFiles?: AgentFiles;
   /** Surfaced into ToolContext for WebSearch. */
   searxngUrl?: string;
   /** Window size for the compaction threshold. Falls back to a no-op large value when omitted. */
@@ -72,6 +75,7 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
     customSystemPrompt: args.customSystemPrompt,
     permissionMode: args.permissionMode,
     claudeMdFiles: args.claudeMdFiles,
+    agentFiles: args.agentFiles,
   });
 
   // Compaction overhead — system prompt + tool schemas. Computed once

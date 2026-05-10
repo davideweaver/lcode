@@ -25,11 +25,14 @@ import {
   SlashPopup,
 } from './slash.js';
 import { StatusLine } from './statusline.js';
-import { sdkMessageTokens } from './tokens.js';
+import { estimateTokens, sdkMessageTokens } from './tokens.js';
+import { buildSystemPrompt } from '../prompts/system.js';
+import { toOpenAITools } from '../core/llm.js';
 import type { UiBlock } from './types.js';
 import { loadSessionMessages } from '../core/session.js';
 import type { SessionSummary } from '../core/sessions.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
+import { loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
 import { loadMcpServers } from '../mcp/config.js';
 import { loadDisabledServers } from '../mcp/disabled.js';
 import { McpManager } from '../mcp/manager.js';
@@ -53,8 +56,6 @@ function formatDuration(ms: number): string {
   return `${hr}h ${remMin}m`;
 }
 
-const SYSTEM_PROMPT_TOKEN_ESTIMATE = 700;
-
 interface AppProps {
   config: LcodeConfig;
   resume?: string;
@@ -73,7 +74,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   const [input, setInput] = useState('');
   const [turnStatus, setTurnStatus] = useState<TurnStatus>({ kind: 'idle' });
   const [sessionId, setSessionId] = useState<string | undefined>(resume);
-  const [tokensUsed, setTokensUsed] = useState(SYSTEM_PROMPT_TOKEN_ESTIMATE);
+  const [tokensUsed, setTokensUsed] = useState(0);
   // The local BPE estimate is a proxy until the first assistant turn re-snaps
   // it to the server's `usage.input_tokens`. Until then the statusline shows
   // an empty bar and "—%" so we don't lie about the actual prompt size.
@@ -88,6 +89,8 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
   const [currentModel, setCurrentModel] = useState(config.model);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
+  const [agentFiles, setAgentFiles] = useState<AgentFiles | undefined>(undefined);
+  const [mcpToolsReady, setMcpToolsReady] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   // Set by cancelTurn() so the finally block in onSubmit can distinguish
@@ -291,6 +294,13 @@ export function App({ config, resume, onSessionChange }: AppProps) {
     loadClaudeMdFiles(cwd).then(setClaudeMdFiles);
   }, [cwd]);
 
+  // Load ~/.lcode agent files (PERSONA/HUMAN/CAPABILITIES/INSTRUCTIONS) once
+  // per session. Done at startup so settings.json is auto-created on first
+  // launch even if the user never submits a prompt.
+  useEffect(() => {
+    loadAgentFiles().then(setAgentFiles);
+  }, []);
+
   // Load MCP server configs and connect once per chat session. We replace
   // the manager here (rather than mutating the empty one created at first
   // render) so the configs are baked in. Cleanup on unmount closes all
@@ -306,6 +316,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       const manager = new McpManager(entries, { disabled });
       mcpManagerRef.current = manager;
       await manager.start();
+      if (!cancelled) setMcpToolsReady(true);
     })();
     return () => {
       cancelled = true;
@@ -313,6 +324,28 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       if (m) void m.close();
     };
   }, [cwd]);
+
+  // Seed tokensUsed with a real baseline (system prompt + tool schemas) once
+  // the async-loaded sources are ready. Replaces the legacy 700-token guess
+  // so /context and the statusline match the breakdown before the first turn.
+  // After the first server-reported usage arrives, tokensUsedVerified flips
+  // true and this effect stops firing.
+  useEffect(() => {
+    if (tokensUsedVerified || blocks.length > 0) return;
+    if (!agentFiles || !claudeMdFiles) return;
+    const tools = [
+      ...BUILTIN_TOOLS,
+      ...(mcpManagerRef.current?.tools() ?? []),
+    ];
+    const sys = buildSystemPrompt({
+      cwd,
+      tools,
+      claudeMdFiles,
+      agentFiles,
+    });
+    const schemas = JSON.stringify(toOpenAITools(tools));
+    setTokensUsed(estimateTokens(sys) + estimateTokens(schemas));
+  }, [agentFiles, claudeMdFiles, cwd, blocks.length, tokensUsedVerified, mcpToolsReady]);
 
   const cancelTurn = useCallback(() => {
     cancelledRef.current = true;
@@ -449,7 +482,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           clearSession: () => {
             setBlocks([]);
             setSessionId(undefined);
-            setTokensUsed(SYSTEM_PROMPT_TOKEN_ESTIMATE);
+            setTokensUsed(0);
             setTokensUsedVerified(false);
             setTurnStatus({ kind: 'idle' });
           },
@@ -489,6 +522,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           // the loaded model has a smaller window than LCODE_CONTEXT_WINDOW.
           config: { ...config, contextWindow: effectiveContextWindow },
           claudeMdFiles,
+          agentFiles,
           mcpManager: mcpManagerRef.current!,
         });
         await drainStream(stream, setBlocks, setSessionId, setTokensUsed, setTokensUsedVerified);
@@ -511,7 +545,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         abortRef.current = null;
       }
     },
-    [busy, config, effectiveContextWindow, cwd, sessionId, slashIdx, claudeMdFiles, currentModel, exit, replaceInput],
+    [busy, config, effectiveContextWindow, cwd, sessionId, slashIdx, claudeMdFiles, agentFiles, currentModel, exit, replaceInput],
   );
 
   const headerItems = useMemo<HeaderItem[]>(() => {
@@ -589,6 +623,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
             ...(mcpManagerRef.current?.tools() ?? []),
           ]}
           claudeMdFiles={claudeMdFiles}
+          agentFiles={agentFiles}
           cwd={cwd}
           contextWindow={effectiveContextWindow}
           tokensUsed={tokensUsed}

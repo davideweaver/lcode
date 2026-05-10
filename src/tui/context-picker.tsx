@@ -3,6 +3,7 @@ import { useMemo, useReducer, useState } from 'react';
 import type { Tool } from '../tools/types.js';
 import type { ClaudeMdFile } from '../prompts/claudemd.js';
 import { renderClaudeMdSection } from '../prompts/claudemd.js';
+import type { AgentFiles } from '../prompts/agents.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 import { toOpenAITools } from '../core/llm.js';
 import { estimateTokens, formatTokenCount, tokenStats } from './tokens.js';
@@ -12,6 +13,7 @@ interface ContextPickerProps {
   blocks: UiBlock[];
   tools: Tool[];
   claudeMdFiles: ClaudeMdFile[] | undefined;
+  agentFiles: AgentFiles | undefined;
   cwd: string;
   permissionMode?: string;
   customSystemPrompt?: string;
@@ -68,6 +70,7 @@ function computeBreakdown(props: ContextPickerProps): Breakdown {
     customSystemPrompt: props.customSystemPrompt,
     permissionMode: props.permissionMode,
     claudeMdFiles: props.claudeMdFiles,
+    agentFiles: props.agentFiles,
   });
   const claudeMdSection =
     props.claudeMdFiles && props.claudeMdFiles.length > 0

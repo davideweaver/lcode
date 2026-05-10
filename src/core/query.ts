@@ -4,6 +4,7 @@ import type { SdkMcpServerConfig, Tool } from '../tools/types.js';
 import { newSessionState } from '../tools/types.js';
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
+import { loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
 import { loadMcpServers } from '../mcp/config.js';
 import { McpManager } from '../mcp/manager.js';
 import type { McpServerConfig } from '../mcp/types.js';
@@ -50,6 +51,12 @@ export interface QueryOptions {
    * value to cache across multiple `query()` calls in the same session.
    */
   claudeMdFiles?: ClaudeMdFile[];
+  /**
+   * Pre-resolved agent-identity strings (persona/human/capabilities/instructions).
+   * If undefined, lcode reads `~/.lcode/settings.json` and the configured
+   * `~/.lcode/*.md` files. Pass an explicit value to skip file IO.
+   */
+  agentFiles?: AgentFiles;
 }
 
 const DEFAULT_MAX_TURNS = 50;
@@ -103,6 +110,8 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
   const claudeMdFiles =
     options.claudeMdFiles ?? (await loadClaudeMdFiles(cwd));
 
+  const agentFiles = options.agentFiles ?? (await loadAgentFiles());
+
   const abortController = options.abortController ?? new AbortController();
 
   const generator = runLoop({
@@ -121,6 +130,7 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     permissionMode: options.permissionMode,
     sessionState: replayedSessionState,
     claudeMdFiles,
+    agentFiles,
     searxngUrl: config.searxngUrl,
     contextWindow: config.contextWindow,
     compactThreshold: config.compactThreshold,
