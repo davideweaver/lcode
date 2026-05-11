@@ -1,28 +1,41 @@
 #!/usr/bin/env node
 
-// CLI entry point - runs the TypeScript CLI directly with tsx in development
-// or the compiled JS in production.
+// CLI entry point. Defaults to running the compiled JS in `dist/` as a
+// single in-process import — no extra `tsx` child, no compile-on-start
+// overhead. For inner-loop hacking on lcode itself, prefer `npm run dev`
+// (which bypasses this launcher entirely and runs `bin/lc.ts` via tsx).
+//
+// To force the dev path here — e.g. when `dist/` is stale and you want
+// instant pickup of source edits — set `LCODE_DEV=1`. As a safety net,
+// the launcher also auto-falls back to tsx with a warning if
+// `dist/bin/lc.js` is missing (fresh checkout, hasn't been built yet).
 //
 // Theme detection used to live here, but doing it in the launcher meant
 // piping LCODE_THEME through spawn's env to the child — which proved
 // fragile. The TUI process now detects its own terminal background
-// (see src/tui/theme-detect.ts) before it mounts Ink. This launcher
-// just spawns the child with inherited stdio.
+// (see src/tui/theme-detect.ts) before it mounts Ink.
 import path from 'path';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const isDevelopment = process.env.NODE_ENV !== 'production';
 const projectRoot = path.join(__dirname, '..');
+const distEntry = path.join(projectRoot, 'dist', 'bin', 'lc.js');
 
-if (isDevelopment) {
-  // Development: use tsx to run TypeScript directly. Pass an absolute
-  // --tsconfig path so tsx honors the project's JSX runtime setting
-  // regardless of the user's invocation directory; do NOT set spawn cwd
-  // so the child inherits the user's shell cwd.
+const forceDev = process.env.LCODE_DEV === '1';
+const distMissing = !existsSync(distEntry);
+
+if (forceDev || distMissing) {
+  if (distMissing && !forceDev) {
+    process.stderr.write(
+      `[lcode] dist/bin/lc.js not found — falling back to tsx. Run \`npm run build\` to silence this.\n`,
+    );
+  }
+  // Dev path: spawn tsx on the TS source. Pass an absolute --tsconfig so
+  // tsx honors the project's JSX runtime regardless of invocation cwd;
+  // do NOT set spawn cwd so the child inherits the user's shell cwd.
   const tsxPath = path.join(projectRoot, 'node_modules', '.bin', 'tsx');
   const cliPath = path.join(projectRoot, 'bin', 'lc.ts');
   const tsconfigPath = path.join(projectRoot, 'tsconfig.json');
@@ -35,9 +48,8 @@ if (isDevelopment) {
 
   child.on('exit', (code) => process.exit(code || 0));
 } else {
-  // Production: run compiled JavaScript
-  // Note: In ESM, we use dynamic import() instead of require()
-  import(path.join(projectRoot, 'dist', 'bin', 'lc.js')).catch((err) => {
+  // Prod path: dynamic-import the compiled JS in-process. Single PID.
+  import(distEntry).catch((err) => {
     console.error(err);
     process.exit(1);
   });
