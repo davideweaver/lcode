@@ -109,10 +109,11 @@ export function MultilineInput({
   // Bracketed-paste state. When the terminal sends `\x1b[200~...\x1b[201~`
   // (which is what macOS terminals emit on Cmd+V even when the clipboard
   // holds image data — the body is just empty in that case), we accumulate
-  // the body across `data` chunks so we can: (a) suppress the literal text
-  // from being inserted, and (b) await the parallel clipboard probe and
-  // either insert `[Image #N]` (if the clipboard had an image) or fall back
-  // to inserting the captured text body (for ordinary text pastes).
+  // the body across `data` chunks so we can: (a) suppress the literal
+  // bracket-paste markers from being inserted as text, (b) insert the
+  // captured body synchronously the moment the end marker arrives, and (c)
+  // — in parallel — probe the system clipboard for image data and append
+  // `[Image #N]` if one is present.
   const pasteBodyRef = useRef<string | null>(null);
   const pasteImagePromiseRef = useRef<Promise<{ n: number } | null> | null>(null);
   const onPasteImageRef = useRef(onPasteImage);
@@ -128,11 +129,22 @@ export function MultilineInput({
     const completePaste = (body: string) => {
       const promise = pasteImagePromiseRef.current ?? Promise.resolve(null);
       pasteImagePromiseRef.current = null;
+      // Insert the text body immediately rather than waiting on the
+      // clipboard probe. Image probing takes 50–200ms (osascript shell-out
+      // on macOS), and deferring the insertion behind it caused pasted text
+      // to appear after a noticeable lag — or, in some terminals, to be
+      // dropped entirely when intervening renders updated the input value
+      // out from under the stale `insertNowRef` closure used by the
+      // deferred callback.
+      if (body) {
+        insertNowRef.current(body);
+      }
+      // The image probe still runs in parallel: if the clipboard also held
+      // an image (rare; typically clipboards are text-only OR image-only),
+      // append the placeholder after whatever body we just inserted.
       void promise.then((result) => {
         if (result) {
           insertNowRef.current(`[Image #${result.n}]`);
-        } else if (body) {
-          insertNowRef.current(body);
         }
       });
     };
@@ -317,22 +329,24 @@ function renderInput(
   );
 }
 
-function renderLineWithCursor(line: string, col: number): ReactNode {
+// Renders the cursor inline as a single string with raw ANSI inverse codes
+// rather than a nested <Text inverse> sibling. The latter ran afoul of Ink's
+// Yoga layout: when the input went from a short value (e.g. empty) to a long
+// pasted body in a single render, the outer ink-text node was marked dirty,
+// but the row Box would sometimes hold onto the previous measured width,
+// causing the new long text to wrap to ~1 char wide. The visible result was
+// "only the first character shows up until the next keystroke forces a
+// layout pass". Returning one squashable string per line sidesteps that:
+// Yoga sees a single textual measurement, the row resizes correctly on
+// commit, and the full body is rendered immediately after the paste.
+const ESC = '\x1b';
+const INV_ON = `${ESC}[7m`;
+const INV_OFF = `${ESC}[27m`;
+function renderLineWithCursor(line: string, col: number): string {
   if (col >= line.length) {
-    return (
-      <>
-        {line}
-        <Text inverse> </Text>
-      </>
-    );
+    return `${line}${INV_ON} ${INV_OFF}`;
   }
-  return (
-    <>
-      {line.slice(0, col)}
-      <Text inverse>{line[col]}</Text>
-      {line.slice(col + 1)}
-    </>
-  );
+  return `${line.slice(0, col)}${INV_ON}${line[col]}${INV_OFF}${line.slice(col + 1)}`;
 }
 
 function posToLineCol(value: string, pos: number): { line: number; col: number } {
