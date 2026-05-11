@@ -129,6 +129,13 @@ export function MultilineInput({
     const completePaste = (body: string) => {
       const promise = pasteImagePromiseRef.current ?? Promise.resolve(null);
       pasteImagePromiseRef.current = null;
+      // Normalize line endings. Terminals in raw mode send `\r` for each
+      // newline inside a bracketed paste (mirroring what the Enter key
+      // emits), and Windows-origin text on the clipboard may arrive as
+      // `\r\n`. Collapsing both to `\n` keeps the rest of the input
+      // pipeline single-format — `value.split('\n')` for rendering, the
+      // backslash-Enter newline insert path, etc.
+      const normalized = body.replace(/\r\n?/g, '\n');
       // Insert the text body immediately rather than waiting on the
       // clipboard probe. Image probing takes 50–200ms (osascript shell-out
       // on macOS), and deferring the insertion behind it caused pasted text
@@ -136,8 +143,8 @@ export function MultilineInput({
       // dropped entirely when intervening renders updated the input value
       // out from under the stale `insertNowRef` closure used by the
       // deferred callback.
-      if (body) {
-        insertNowRef.current(body);
+      if (normalized) {
+        insertNowRef.current(normalized);
       }
       // The image probe still runs in parallel: if the clipboard also held
       // an image (rare; typically clipboards are text-only OR image-only),
