@@ -34,11 +34,26 @@ export interface ThinkingBlock {
   thinking: string;
 }
 
+export type ImageMediaType = 'image/png' | 'image/jpeg';
+
+/**
+ * User-supplied images. Persisted to JSONL with `source.type === 'file_path'`
+ * so the session log stays small (a few hundred bytes vs. multi-MB base64);
+ * resolved to `source.type === 'base64'` at LLM send time.
+ */
+export interface ImageBlock {
+  type: 'image';
+  source:
+    | { type: 'base64'; media_type: ImageMediaType; data: string }
+    | { type: 'file_path'; media_type: ImageMediaType; path: string };
+}
+
 export type ContentBlock =
   | TextBlock
   | ToolUseBlock
   | ToolResultBlock
-  | ThinkingBlock;
+  | ThinkingBlock
+  | ImageBlock;
 
 export interface AnthropicMessage {
   role: 'user' | 'assistant';
@@ -169,6 +184,13 @@ export type SDKMessage =
 
 export function textBlock(text: string): TextBlock {
   return { type: 'text', text };
+}
+
+export function imageBlockFromPath(
+  path: string,
+  mediaType: ImageMediaType,
+): ImageBlock {
+  return { type: 'image', source: { type: 'file_path', media_type: mediaType, path } };
 }
 
 export function toolResultBlock(

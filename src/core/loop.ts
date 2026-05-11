@@ -31,7 +31,7 @@ export interface LoopArgs {
   tools: Tool[];
   customSystemPrompt?: string;
   initialMessages: AnthropicMessage[];
-  newUserPrompt: string;
+  newUserPrompt: string | ContentBlock[];
   maxTurns: number;
   signal: AbortSignal;
   includePartialMessages: boolean;
@@ -87,9 +87,14 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       ? estimateTokens(JSON.stringify(toOpenAITools(enabledTools)))
       : 0);
 
+  const userContent: ContentBlock[] =
+    typeof args.newUserPrompt === 'string'
+      ? [textBlock(args.newUserPrompt)]
+      : args.newUserPrompt;
+
   const history: AnthropicMessage[] = [
     ...args.initialMessages,
-    { role: 'user', content: [textBlock(args.newUserPrompt)] },
+    { role: 'user', content: userContent },
   ];
 
   // Persist the user prompt so resume() rebuilds a continuous history.
@@ -98,7 +103,7 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
   yield {
     type: 'user',
     session_id: args.sessionId,
-    message: { role: 'user', content: [textBlock(args.newUserPrompt)] },
+    message: { role: 'user', content: userContent },
   };
 
   let numTurns = 0;

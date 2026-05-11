@@ -41,6 +41,13 @@ type Props = {
    * double-tap-clear logic) while this is true.
    */
   consumedRef?: React.MutableRefObject<boolean>;
+  /**
+   * Called when the user pastes (Ctrl+V or terminal-app Cmd+V via bracketed
+   * paste). The parent reads the system clipboard and, if an image is
+   * present, caches it and returns the assigned global number. Returning
+   * `null` falls back to normal text paste / no-op.
+   */
+  onPasteImage?: () => Promise<{ n: number } | null>;
 };
 
 export function MultilineInput({
@@ -51,6 +58,7 @@ export function MultilineInput({
   prompt = '› ',
   promptColor = 'cyan',
   consumedRef,
+  onPasteImage,
 }: Props) {
   const [cursor, setCursor] = useState(value.length);
 
@@ -82,6 +90,12 @@ export function MultilineInput({
     [value, cursor, applyEdit],
   );
 
+  // Refresh-on-render ref so async callbacks (clipboard probes that resolve
+  // long after the keystroke that triggered them) always see the latest
+  // `value`/`cursor` instead of the values closed over at handler creation.
+  const insertNowRef = useRef<(str: string) => void>(() => {});
+  insertNowRef.current = insertAtCursor;
+
   const localConsumedRef = useRef(false);
   const armConsumed = useCallback(() => {
     localConsumedRef.current = true;
@@ -92,12 +106,75 @@ export function MultilineInput({
     });
   }, [consumedRef]);
 
+  // Bracketed-paste state. When the terminal sends `\x1b[200~...\x1b[201~`
+  // (which is what macOS terminals emit on Cmd+V even when the clipboard
+  // holds image data — the body is just empty in that case), we accumulate
+  // the body across `data` chunks so we can: (a) suppress the literal text
+  // from being inserted, and (b) await the parallel clipboard probe and
+  // either insert `[Image #N]` (if the clipboard had an image) or fall back
+  // to inserting the captured text body (for ordinary text pastes).
+  const pasteBodyRef = useRef<string | null>(null);
+  const pasteImagePromiseRef = useRef<Promise<{ n: number } | null> | null>(null);
+  const onPasteImageRef = useRef(onPasteImage);
+  onPasteImageRef.current = onPasteImage;
+
   const { stdin, isRawModeSupported } = useStdin();
   useEffect(() => {
     if (!focus || !stdin || !isRawModeSupported) return;
 
+    const PASTE_START = '\x1b[200~';
+    const PASTE_END = '\x1b[201~';
+
+    const completePaste = (body: string) => {
+      const promise = pasteImagePromiseRef.current ?? Promise.resolve(null);
+      pasteImagePromiseRef.current = null;
+      void promise.then((result) => {
+        if (result) {
+          insertNowRef.current(`[Image #${result.n}]`);
+        } else if (body) {
+          insertNowRef.current(body);
+        }
+      });
+    };
+
     const handler = (data: Buffer) => {
       const str = data.toString();
+
+      // Already mid-paste from a previous chunk: keep accumulating until
+      // the end marker arrives.
+      if (pasteBodyRef.current !== null) {
+        const endIdx = str.indexOf(PASTE_END);
+        if (endIdx === -1) {
+          pasteBodyRef.current += str;
+          armConsumed();
+          return;
+        }
+        const tail = str.slice(0, endIdx);
+        const body = pasteBodyRef.current + tail;
+        pasteBodyRef.current = null;
+        completePaste(body);
+        armConsumed();
+        return;
+      }
+
+      // New paste starting in this chunk: kick off the clipboard probe in
+      // parallel and capture the body bytes that arrive between the start
+      // and end markers (which may span chunks).
+      const startIdx = str.indexOf(PASTE_START);
+      if (startIdx !== -1) {
+        const probe = onPasteImageRef.current;
+        pasteImagePromiseRef.current = probe ? probe() : Promise.resolve(null);
+        const after = str.slice(startIdx + PASTE_START.length);
+        const endIdx = after.indexOf(PASTE_END);
+        if (endIdx === -1) {
+          pasteBodyRef.current = after;
+        } else {
+          completePaste(after.slice(0, endIdx));
+        }
+        armConsumed();
+        return;
+      }
+
       if (
         str === '\x1b\r' ||
         str === '\x1b\n' ||
@@ -181,7 +258,21 @@ export function MultilineInput({
       // Hand off to parent for slash-popup tab autocomplete and ctrl/meta
       // shortcuts (ctrl+c, ctrl+o, etc.).
       if (key.tab) return;
-      if (key.ctrl) return;
+      if (key.ctrl) {
+        // Ctrl+V: trigger the same clipboard probe path as bracketed paste.
+        // Terminals don't forward image bytes via stdin, so we shell out and
+        // either insert `[Image #N]` (if an image was on the clipboard) or
+        // do nothing (text-on-clipboard Ctrl+V is unusual; bracketed paste
+        // is the expected route for that case).
+        if (input === 'v' && onPasteImageRef.current) {
+          const probe = onPasteImageRef.current;
+          void probe().then((result) => {
+            if (result) insertNowRef.current(`[Image #${result.n}]`);
+          });
+          return;
+        }
+        return;
+      }
       if (key.meta) return;
 
       if (!input) return;

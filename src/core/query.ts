@@ -8,7 +8,7 @@ import { loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
 import { loadMcpServers } from '../mcp/config.js';
 import { McpManager } from '../mcp/manager.js';
 import type { McpServerConfig } from '../mcp/types.js';
-import type { AnthropicMessage, SDKMessage } from './messages.js';
+import type { AnthropicMessage, ContentBlock, SDKMessage } from './messages.js';
 import { replayHistoryForCompact } from './compactor.js';
 import { runLoop } from './loop.js';
 import {
@@ -19,7 +19,13 @@ import {
 } from './session.js';
 
 export interface QueryOptions {
-  prompt: string;
+  /**
+   * The user prompt for this turn. A plain string takes the legacy
+   * text-only path. Pass `ContentBlock[]` (text + image blocks) to send
+   * multimodal content to the LLM — the TUI builds this when the user
+   * pastes images.
+   */
+  prompt: string | ContentBlock[];
   cwd?: string;
   model?: string;
   systemPrompt?: string;

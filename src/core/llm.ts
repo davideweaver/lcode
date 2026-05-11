@@ -2,12 +2,14 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import type {
   AnthropicMessage,
   ContentBlock,
+  ImageBlock,
   PartialAssistantEvent,
   Usage,
 } from './messages.js';
 import type { Tool } from '../tools/types.js';
 import { ThinkingStreamParser } from './thinking-parser.js';
 import { HarmonyNoiseFilter } from './harmony-filter.js';
+import { ImageCacheMissError, resolveImageBlock } from './image-cache.js';
 
 export interface LlmStreamArgs {
   baseUrl: string;
@@ -78,6 +80,7 @@ export async function* streamLlm(
   args: LlmStreamArgs,
 ): AsyncGenerator<PartialAssistantEvent, LlmFinalMessage, void> {
   const url = `${args.baseUrl.replace(/\/$/, '')}/v1/chat/completions`;
+  const messages = await anthropicToOpenAI(args.systemPrompt, args.messages);
   const body = {
     model: args.model,
     stream: true,
@@ -87,7 +90,7 @@ export async function* streamLlm(
     stream_options: { include_usage: true },
     temperature: args.temperature ?? 0.2,
     max_tokens: args.maxTokens,
-    messages: anthropicToOpenAI(args.systemPrompt, args.messages),
+    messages,
     tools: args.tools.length > 0 ? toOpenAITools(args.tools) : undefined,
     tool_choice: args.tools.length > 0 ? 'auto' : undefined,
     // Hint to llama.cpp / Qwen3-style chat templates: produce reasoning when
@@ -328,9 +331,13 @@ function mapFinishReason(reason: string): LlmFinalMessage['stop_reason'] {
   }
 }
 
+type OpenAIContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string } };
+
 interface OpenAIMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
+  content: string | OpenAIContentPart[] | null;
   tool_call_id?: string;
   tool_calls?: Array<{
     id: string;
@@ -339,10 +346,10 @@ interface OpenAIMessage {
   }>;
 }
 
-export function anthropicToOpenAI(
+export async function anthropicToOpenAI(
   systemPrompt: string,
   messages: AnthropicMessage[],
-): OpenAIMessage[] {
+): Promise<OpenAIMessage[]> {
   const out: OpenAIMessage[] = [];
   if (systemPrompt) out.push({ role: 'system', content: systemPrompt });
 
@@ -375,7 +382,8 @@ export function anthropicToOpenAI(
       if (toolCalls.length > 0) out_msg.tool_calls = toolCalls;
       out.push(out_msg);
     } else {
-      // role: 'user' — emit tool_result blocks first (in order), then any text
+      // role: 'user' — emit tool_result blocks first (in order), then text
+      // (or multimodal text+image content if any image blocks are present).
       for (const block of msg.content) {
         if (block.type === 'tool_result') {
           const content = typeof block.content === 'string'
@@ -388,14 +396,50 @@ export function anthropicToOpenAI(
           });
         }
       }
-      const text = msg.content
-        .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n');
-      if (text) out.push({ role: 'user', content: text });
+
+      const hasImage = msg.content.some((b) => b.type === 'image');
+      if (hasImage) {
+        const parts: OpenAIContentPart[] = [];
+        for (const block of msg.content) {
+          if (block.type === 'text') {
+            parts.push({ type: 'text', text: block.text });
+          } else if (block.type === 'image') {
+            const url = await imageBlockToDataUrl(block);
+            if (url.kind === 'image') {
+              parts.push({ type: 'image_url', image_url: { url: url.dataUrl } });
+            } else {
+              parts.push({ type: 'text', text: url.stub });
+            }
+          }
+        }
+        if (parts.length > 0) out.push({ role: 'user', content: parts });
+      } else {
+        const text = msg.content
+          .filter((b): b is { type: 'text'; text: string } => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n');
+        if (text) out.push({ role: 'user', content: text });
+      }
     }
   }
   return out;
+}
+
+async function imageBlockToDataUrl(
+  block: ImageBlock,
+): Promise<{ kind: 'image'; dataUrl: string } | { kind: 'stub'; stub: string }> {
+  try {
+    const { mediaType, base64 } = await resolveImageBlock(block);
+    return { kind: 'image', dataUrl: `data:${mediaType};base64,${base64}` };
+  } catch (err) {
+    if (err instanceof ImageCacheMissError) {
+      // eslint-disable-next-line no-console
+      console.error(`[lcode] image cache miss: ${err.path} — sending text stub instead`);
+      const path = err.path;
+      return { kind: 'stub', stub: `[image missing: ${path}]` };
+    }
+    throw err;
+  }
 }
 
 export function toOpenAITools(tools: Tool[]) {

@@ -5,7 +5,10 @@ import { basename } from 'node:path';
 import type { LcodeConfig } from '../config.js';
 import { probeLlm, type HealthResult } from '../health.js';
 import { query } from '../core/query.js';
-import type { SDKMessage } from '../core/messages.js';
+import type { ContentBlock, ImageMediaType, SDKMessage } from '../core/messages.js';
+import { imageBlockFromPath, textBlock } from '../core/messages.js';
+import { allocateNext as allocateImage } from '../core/image-cache.js';
+import { tryReadClipboardImage } from '../core/clipboard.js';
 import { Banner } from './banner.js';
 import { BlockList } from './blocks.js';
 import { Divider } from './divider.js';
@@ -136,6 +139,35 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   // for that data chunk (ESC, stray text) don't trigger our shortcuts.
   const inputConsumedRef = useRef(false);
 
+  // Pasted images bound to placeholders in the current input buffer.
+  // Keyed by the global image number; values point at the cached PNG on
+  // disk under ~/.lcode/image-cache/. The map is cleared on submit and on
+  // /clear, so placeholders only resolve within the buffer that captured
+  // them — typing `[Image #29]` literally without pasting attaches nothing.
+  const attachmentsRef = useRef(
+    new Map<number, { path: string; mediaType: ImageMediaType }>(),
+  );
+
+  const sessionIdRef = useRef<string | undefined>(sessionId);
+  sessionIdRef.current = sessionId;
+
+  // Called by MultilineInput on Ctrl+V or bracketed-paste-start. Reads the
+  // OS clipboard for image data; if found, caches it and registers the
+  // placeholder→file mapping so onSubmit can build the multimodal message.
+  const onPasteImage = useCallback(async (): Promise<{ n: number } | null> => {
+    try {
+      const { n, path, mediaType } = await allocateImage(
+        sessionIdRef.current ?? 'unsaved',
+      );
+      const result = await tryReadClipboardImage(path);
+      if (!result) return null;
+      attachmentsRef.current.set(n, { path, mediaType: result.mediaType ?? mediaType });
+      return { n };
+    } catch {
+      return null;
+    }
+  }, []);
+
   // Shared logic between the in-TUI /resume picker and the CLI --resume
   // flag: load the session's JSONL, replay blocks, restore token count, and
   // seed prompt-history navigation.
@@ -214,9 +246,14 @@ export function App({ config, resume, onSessionChange }: AppProps) {
   useEffect(() => {
     if (!process.stdout.isTTY) return;
     process.stdout.write('\x1b[>4;1m');
+    // Bracketed paste mode (DECSET 2004): the terminal wraps pasted content
+    // in `\x1b[200~...\x1b[201~`. MultilineInput uses the start sequence as
+    // a Cmd+V signal to probe the system clipboard for image data.
+    process.stdout.write('\x1b[?2004h');
     const cleanup = () => {
       if (process.stdout.isTTY) {
         process.stdout.write('\x1b[>4;0m');
+        process.stdout.write('\x1b[?2004l');
       }
     };
     process.on('exit', cleanup);
@@ -508,6 +545,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
             setTokensUsed(0);
             setTokensUsedVerified(false);
             setTurnStatus({ kind: 'idle' });
+            attachmentsRef.current = new Map();
           },
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
@@ -519,6 +557,13 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         });
         return;
       }
+
+      // Build the structured user content from the trimmed text + any
+      // pasted-image attachments. If no images, falls through to the
+      // existing string path. Once consumed, clear the attachments map so
+      // the next buffer starts fresh.
+      const userContent = buildUserContent(trimmed, attachmentsRef.current);
+      attachmentsRef.current = new Map();
 
       const userBlock: UiBlock = { kind: 'user_prompt', text: trimmed };
       setBlocks((b) => [...b, userBlock]);
@@ -533,7 +578,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       cancelledRef.current = false;
       try {
         const stream = query({
-          prompt: trimmed,
+          prompt: userContent,
           cwd,
           model: currentModel,
           abortController: ctl,
@@ -665,6 +710,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
                 focus={!busy}
                 promptColor={busy ? 'gray' : 'cyan'}
                 consumedRef={inputConsumedRef}
+                onPasteImage={onPasteImage}
               />
             ) : (
               <Text dimColor>(non-interactive: stdin is not a TTY)</Text>
@@ -690,6 +736,41 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       )}
     </Box>
   );
+}
+
+/**
+ * Walk the trimmed prompt for `[Image #N]` placeholders and interleave
+ * text + image blocks in cursor order. Numbers without a corresponding
+ * entry in the attachments map (e.g. typed literally) stay as plain text.
+ * If no images attach, we collapse to a single string for the existing
+ * text-only path so the common case takes no allocations beyond the regex.
+ */
+function buildUserContent(
+  trimmed: string,
+  attachments: Map<number, { path: string; mediaType: ImageMediaType }>,
+): string | ContentBlock[] {
+  if (attachments.size === 0) return trimmed;
+
+  const re = /\[Image #(\d+)\]/g;
+  const blocks: ContentBlock[] = [];
+  let cursor = 0;
+  let hasImage = false;
+
+  for (const match of trimmed.matchAll(re)) {
+    const n = Number(match[1]);
+    const att = attachments.get(n);
+    if (!att) continue;
+    const start = match.index ?? 0;
+    const before = trimmed.slice(cursor, start);
+    if (before) blocks.push(textBlock(before));
+    blocks.push(imageBlockFromPath(att.path, att.mediaType));
+    cursor = start + match[0].length;
+    hasImage = true;
+  }
+  if (!hasImage) return trimmed;
+  const tail = trimmed.slice(cursor);
+  if (tail) blocks.push(textBlock(tail));
+  return blocks;
 }
 
 function BlockListItem({

@@ -3,12 +3,12 @@ import { anthropicToOpenAI } from '../src/core/llm.js';
 import type { AnthropicMessage } from '../src/core/messages.js';
 
 describe('anthropicToOpenAI', () => {
-  it('passes through string content for user/assistant', () => {
+  it('passes through string content for user/assistant', async () => {
     const messages: AnthropicMessage[] = [
       { role: 'user', content: 'hi' },
       { role: 'assistant', content: 'hello' },
     ];
-    const out = anthropicToOpenAI('SYS', messages);
+    const out = await anthropicToOpenAI('SYS', messages);
     expect(out).toEqual([
       { role: 'system', content: 'SYS' },
       { role: 'user', content: 'hi' },
@@ -16,7 +16,7 @@ describe('anthropicToOpenAI', () => {
     ]);
   });
 
-  it('emits tool_calls for assistant tool_use blocks', () => {
+  it('emits tool_calls for assistant tool_use blocks', async () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'assistant',
@@ -26,7 +26,7 @@ describe('anthropicToOpenAI', () => {
         ],
       },
     ];
-    const out = anthropicToOpenAI('', messages);
+    const out = await anthropicToOpenAI('', messages);
     expect(out).toHaveLength(1);
     expect(out[0]).toEqual({
       role: 'assistant',
@@ -41,7 +41,7 @@ describe('anthropicToOpenAI', () => {
     });
   });
 
-  it('splits tool_result blocks into role:tool messages', () => {
+  it('splits tool_result blocks into role:tool messages', async () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'user',
@@ -51,26 +51,26 @@ describe('anthropicToOpenAI', () => {
         ],
       },
     ];
-    const out = anthropicToOpenAI('', messages);
+    const out = await anthropicToOpenAI('', messages);
     expect(out).toEqual([
       { role: 'tool', tool_call_id: 'call_1', content: 'file contents' },
       { role: 'user', content: 'now what?' },
     ]);
   });
 
-  it('omits empty content for assistant with only tool_use', () => {
+  it('omits empty content for assistant with only tool_use', async () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'assistant',
         content: [{ type: 'tool_use', id: 'c1', name: 'Bash', input: { command: 'ls' } }],
       },
     ];
-    const out = anthropicToOpenAI('', messages);
+    const out = await anthropicToOpenAI('', messages);
     expect(out[0]).toMatchObject({ role: 'assistant', content: null });
     expect(out[0]).toHaveProperty('tool_calls');
   });
 
-  it('rewraps thinking blocks as <think>…</think> when sending back', () => {
+  it('rewraps thinking blocks as <think>…</think> when sending back', async () => {
     const messages: AnthropicMessage[] = [
       {
         role: 'assistant',
@@ -81,7 +81,7 @@ describe('anthropicToOpenAI', () => {
         ],
       },
     ];
-    const out = anthropicToOpenAI('', messages);
+    const out = await anthropicToOpenAI('', messages);
     expect(out).toHaveLength(1);
     expect(out[0]?.content).toBe(
       '<think>I should call Read first</think>Reading the file.',

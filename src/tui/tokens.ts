@@ -25,6 +25,12 @@ export function contentBlockTokens(block: ContentBlock): number {
     }
     case 'thinking':
       return estimateTokens(block.thinking);
+    case 'image':
+      // Vision token cost depends on the model's tiling (often ~768 tokens
+      // for a single tile). The server's end-of-turn usage snap corrects
+      // whatever drift this proxy has — this number only feeds pre-turn
+      // budget estimates for compaction scheduling.
+      return 768;
   }
 }
 
