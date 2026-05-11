@@ -11,10 +11,6 @@
         "context7": {
             "type": "http",
             "url": "https://mcp.context7.com/mcp"
-        },
-        "xerro": {
-            "type": "sse",
-            "url": "http://localhost:9205/mcp"
         }
     }
 }
