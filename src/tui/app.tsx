@@ -604,6 +604,23 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       abortRef.current = ctl;
       lastPromptRef.current = trimmed;
       cancelledRef.current = false;
+      // Ensure the n_ctx probe has resolved before locking the
+      // contextWindow into the loop. Without this, a fast-typing user can
+      // submit before the mount-time probe returns, anchoring the
+      // multi-turn loop's compaction threshold to the static
+      // LCODE_CONTEXT_WINDOW fallback for the entire run — even after the
+      // statusline later flips to the probed n_ctx.
+      let probedContextWindow = health?.contextWindow ?? null;
+      if (probedContextWindow === null) {
+        try {
+          const h = await probeLlm(config, undefined, currentModel);
+          setHealth(h);
+          probedContextWindow = h.contextWindow;
+        } catch {
+          // Probe failed — fall through to the config default below.
+        }
+      }
+      const runContextWindow = probedContextWindow ?? config.contextWindow;
       try {
         const stream = query({
           prompt: userContent,
@@ -616,7 +633,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           // auto-compaction threshold matches the actual server limit, not
           // the env-var fallback. Without this, compaction never fires when
           // the loaded model has a smaller window than LCODE_CONTEXT_WINDOW.
-          config: { ...config, contextWindow: effectiveContextWindow },
+          config: { ...config, contextWindow: runContextWindow },
           claudeMdFiles,
           agentFiles,
           mcpManager: mcpManagerRef.current!,
