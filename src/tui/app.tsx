@@ -35,7 +35,7 @@ import type { UiBlock } from './types.js';
 import { loadSessionMessages } from '../core/session.js';
 import type { SessionSummary } from '../core/sessions.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
-import { loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
+import { defaultAgentFiles, loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
 import { loadMcpServers } from '../mcp/config.js';
 import { loadDisabledServers } from '../mcp/disabled.js';
 import { McpManager } from '../mcp/manager.js';
@@ -63,6 +63,12 @@ interface AppProps {
   config: LcodeConfig;
   resume?: string;
   /**
+   * When true, skip reading ~/.lcode/settings.json and use the built-in
+   * default persona/human/capabilities/instructions. Set by the
+   * `--no-agent-files` CLI flag.
+   */
+  skipAgentFiles?: boolean;
+  /**
    * Called whenever the session id changes (incl. when the loop's first
    * `system: init` arrives for a brand-new chat). The CLI uses this to
    * show a "Resume this session with: ..." hint after the TUI exits.
@@ -70,7 +76,7 @@ interface AppProps {
   onSessionChange?: (sessionId: string | undefined) => void;
 }
 
-export function App({ config, resume, onSessionChange }: AppProps) {
+export function App({ config, resume, skipAgentFiles, onSessionChange }: AppProps) {
   const { exit } = useApp();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [blocks, setBlocks] = useState<UiBlock[]>([]);
@@ -373,10 +379,15 @@ export function App({ config, resume, onSessionChange }: AppProps) {
 
   // Load ~/.lcode agent files (PERSONA/HUMAN/CAPABILITIES/INSTRUCTIONS) once
   // per session. Done at startup so settings.json is auto-created on first
-  // launch even if the user never submits a prompt.
+  // launch even if the user never submits a prompt. `--no-agent-files`
+  // short-circuits to the built-in defaults and leaves settings.json alone.
   useEffect(() => {
+    if (skipAgentFiles) {
+      setAgentFiles(defaultAgentFiles());
+      return;
+    }
     loadAgentFiles().then(setAgentFiles);
-  }, []);
+  }, [skipAgentFiles]);
 
   // Load MCP server configs and connect once per chat session. We replace
   // the manager here (rather than mutating the empty one created at first

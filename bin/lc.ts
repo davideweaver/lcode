@@ -15,7 +15,11 @@ program
   .version('0.0.1')
   .option('--resume <sessionId>', 'Resume an existing session by id')
   .option('--model <model>', 'Override the configured model for this session')
-  .action(async (opts: { resume?: string; model?: string }) => {
+  .option(
+    '--no-agent-files',
+    'Skip loading PERSONA/HUMAN/CAPABILITIES/INSTRUCTIONS from ~/.lcode/settings.json; use built-in defaults',
+  )
+  .action(async (opts: { resume?: string; model?: string; agentFiles: boolean }) => {
     const config = loadConfig();
     if (opts.model) config.model = opts.model;
     // Detect the terminal theme before Ink takes over stdin. The OSC 11
@@ -31,6 +35,7 @@ program
       createElement(App, {
         config,
         resume: opts.resume,
+        skipAgentFiles: !opts.agentFiles,
         onSessionChange: (id) => {
           if (id) lastSessionId = id;
         },
