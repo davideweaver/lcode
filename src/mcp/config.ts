@@ -3,6 +3,25 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { McpServerConfig, McpServerEntry } from './types.js';
 
+export type McpScope = 'user' | 'project' | 'claude' | 'unknown';
+
+/**
+ * Map a source path (as produced by `loadMcpServers`) back to its scope label.
+ * `loadMcpServers` only emits three paths — `~/.lcode/mcp.json`,
+ * `<projectRoot>/.mcp.json`, and `~/.claude.json` — so the mapping is exact
+ * for those and falls through to `unknown` otherwise.
+ */
+export function scopeFromSource(
+  source: string | null | undefined,
+  homeDir: string = homedir(),
+): McpScope {
+  if (!source) return 'unknown';
+  if (source === join(homeDir, '.lcode', 'mcp.json')) return 'user';
+  if (source === join(homeDir, '.claude.json')) return 'claude';
+  if (source.endsWith('/.mcp.json') || source.endsWith('\\.mcp.json')) return 'project';
+  return 'unknown';
+}
+
 export interface LoadMcpOptions {
   /** Override for tests; defaults to os.homedir(). */
   homeDir?: string;

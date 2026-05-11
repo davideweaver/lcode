@@ -3,6 +3,7 @@ import { useMemo, useReducer, useState } from 'react';
 import type { McpManager } from '../mcp/manager.js';
 import type { Tool } from '../tools/types.js';
 import type { McpServerConfig, McpServerStatus } from '../mcp/types.js';
+import { scopeFromSource, type McpScope } from '../mcp/config.js';
 import { Divider } from './divider.js';
 
 interface McpPickerProps {
@@ -201,6 +202,7 @@ function ServerListView({
         const idx = pageStart + i;
         const selected = idx === selectedIdx;
         const transport = (mcpManager.transportOf(row.name) ?? '?').padEnd(5);
+        const scope = scopeFromSource(mcpManager.sourceOf(row.name)).padEnd(7);
         return (
           <Box key={row.name}>
             <Text>
@@ -211,7 +213,7 @@ function ServerListView({
               <Text color={selected ? 'cyan' : undefined} bold={selected}>
                 {row.name.padEnd(nameWidth)}
               </Text>
-              <Text color="gray">  {transport}  {statusDetail(row.status)}</Text>
+              <Text color="gray">  {transport}  {scope}  {statusDetail(row.status)}</Text>
             </Text>
           </Box>
         );
@@ -293,6 +295,7 @@ function ServerDetailView({
       {config && (config.type === 'http' || config.type === 'sse') && (
         <Field label="URL" value={config.url} />
       )}
+      <Field label="Scope" value={describeScope(scopeFromSource(source))} />
       <Field label="Config location" value={source ?? '(unknown)'} />
       <Field label="Capabilities" value="tools" />
       <Field
@@ -320,6 +323,19 @@ function ServerDetailView({
       </Box>
     </Box>
   );
+}
+
+function describeScope(scope: McpScope): string {
+  switch (scope) {
+    case 'user':
+      return 'user (~/.lcode/mcp.json)';
+    case 'project':
+      return 'project (.mcp.json)';
+    case 'claude':
+      return 'claude (~/.claude.json)';
+    case 'unknown':
+      return '(unknown)';
+  }
 }
 
 function renderStatus(status: McpServerStatus | undefined): string {

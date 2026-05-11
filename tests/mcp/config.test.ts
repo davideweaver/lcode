@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadMcpServers } from '../../src/mcp/config.js';
+import { loadMcpServers, scopeFromSource } from '../../src/mcp/config.js';
 
 async function setup(): Promise<{
   home: string;
@@ -170,5 +170,31 @@ describe('loadMcpServers', () => {
     );
     const servers = await loadMcpServers(subDir, { homeDir: home, onWarn: () => {} });
     expect(servers[0].config).toMatchObject({ type: 'http', url: 'http://x' });
+  });
+});
+
+describe('scopeFromSource', () => {
+  const home = '/home/test';
+
+  it('labels ~/.lcode/mcp.json as user', () => {
+    expect(scopeFromSource(join(home, '.lcode', 'mcp.json'), home)).toBe('user');
+  });
+
+  it('labels ~/.claude.json as claude', () => {
+    expect(scopeFromSource(join(home, '.claude.json'), home)).toBe('claude');
+  });
+
+  it('labels project .mcp.json as project', () => {
+    expect(scopeFromSource('/repos/myproj/.mcp.json', home)).toBe('project');
+  });
+
+  it('returns unknown for null/undefined/empty', () => {
+    expect(scopeFromSource(null, home)).toBe('unknown');
+    expect(scopeFromSource(undefined, home)).toBe('unknown');
+    expect(scopeFromSource('', home)).toBe('unknown');
+  });
+
+  it('returns unknown for unrecognized paths', () => {
+    expect(scopeFromSource('/etc/something/else.json', home)).toBe('unknown');
   });
 });
