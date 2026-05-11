@@ -1,5 +1,5 @@
 import { Box, Static, Text, useApp, useInput } from 'ink';
-import { MultilineInput } from './multiline-input.js';
+import { MultilineInput, PASTE_PLACEHOLDER_RE } from './multiline-input.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { basename } from 'node:path';
 import type { LcodeConfig } from '../config.js';
@@ -148,6 +148,13 @@ export function App({ config, resume, onSessionChange }: AppProps) {
     new Map<number, { path: string; mediaType: ImageMediaType }>(),
   );
 
+  // Pasted multi-line text bound to `[Pasted text #N +M lines]` tokens in
+  // the current input buffer. Like attachmentsRef, this map and its
+  // counter reset on submit / /clear so numbers stay small and tokens
+  // only resolve within the buffer that captured them.
+  const pastedTextsRef = useRef(new Map<number, string>());
+  const pasteCounterRef = useRef(0);
+
   const sessionIdRef = useRef<string | undefined>(sessionId);
   sessionIdRef.current = sessionId;
 
@@ -166,6 +173,16 @@ export function App({ config, resume, onSessionChange }: AppProps) {
     } catch {
       return null;
     }
+  }, []);
+
+  // Called by MultilineInput when a long multi-line paste arrives. Assigns
+  // the next placeholder number for this buffer, stashes the body, and
+  // returns the number so the input can render `[Pasted text #N +M lines]`.
+  const onPasteText = useCallback((body: string): { n: number } | null => {
+    pasteCounterRef.current += 1;
+    const n = pasteCounterRef.current;
+    pastedTextsRef.current.set(n, body);
+    return { n };
   }, []);
 
   // Shared logic between the in-TUI /resume picker and the CLI --resume
@@ -546,6 +563,8 @@ export function App({ config, resume, onSessionChange }: AppProps) {
             setTokensUsedVerified(false);
             setTurnStatus({ kind: 'idle' });
             attachmentsRef.current = new Map();
+            pastedTextsRef.current = new Map();
+            pasteCounterRef.current = 0;
           },
           openResumePicker: () => setPickerOpen(true),
           openModelPicker: () => setModelPickerOpen(true),
@@ -557,6 +576,15 @@ export function App({ config, resume, onSessionChange }: AppProps) {
         });
         return;
       }
+
+      // Expand any `[Pasted text #N +M lines]` placeholders back to the
+      // original pasted body. The displayed prompt block and the message
+      // sent to the model both use the expanded form, so the conversation
+      // history stays self-contained (you can read what was pasted without
+      // any out-of-band state).
+      trimmed = expandPastedTexts(trimmed, pastedTextsRef.current);
+      pastedTextsRef.current = new Map();
+      pasteCounterRef.current = 0;
 
       // Build the structured user content from the trimmed text + any
       // pasted-image attachments. If no images, falls through to the
@@ -711,6 +739,7 @@ export function App({ config, resume, onSessionChange }: AppProps) {
                 promptColor={busy ? 'gray' : 'cyan'}
                 consumedRef={inputConsumedRef}
                 onPasteImage={onPasteImage}
+                onPasteText={onPasteText}
               />
             ) : (
               <Text dimColor>(non-interactive: stdin is not a TTY)</Text>
@@ -736,6 +765,23 @@ export function App({ config, resume, onSessionChange }: AppProps) {
       )}
     </Box>
   );
+}
+
+/**
+ * Replace `[Pasted text #N +M lines]` tokens with the captured body for
+ * that N. Tokens whose N isn't in the map (typed literally, or the map
+ * was cleared between paste and submit) are left as-is, so they round-trip
+ * back through the session JSONL without surprises.
+ */
+function expandPastedTexts(
+  trimmed: string,
+  pastes: Map<number, string>,
+): string {
+  if (pastes.size === 0) return trimmed;
+  return trimmed.replace(PASTE_PLACEHOLDER_RE, (match, n) => {
+    const body = pastes.get(Number(n));
+    return body ?? match;
+  });
 }
 
 /**

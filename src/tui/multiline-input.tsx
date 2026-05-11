@@ -48,7 +48,24 @@ type Props = {
    * `null` falls back to normal text paste / no-op.
    */
   onPasteImage?: () => Promise<{ n: number } | null>;
+  /**
+   * Called when a long multi-line paste arrives, so the parent can store
+   * the body and assign a placeholder number. Returning `null` falls back
+   * to inserting the body inline as plain text.
+   */
+  onPasteText?: (body: string) => { n: number } | null;
 };
+
+// Pastes with more than this many lines are inserted as a
+// `[Pasted text #N +M lines]` placeholder instead of inline text. The
+// parent keeps the real body in a map keyed by N and expands the
+// placeholder when the prompt is submitted.
+const PASTE_PLACEHOLDER_LINE_THRESHOLD = 3;
+
+// Recognizes a placeholder token. Used both for atomic-delete in the input
+// and for expanding placeholders back to the original body on submit.
+export const PASTE_PLACEHOLDER_RE = /\[Pasted text #(\d+) \+(\d+) lines?\]/g;
+const PASTE_PLACEHOLDER_TAIL_RE = /\[Pasted text #(\d+) \+(\d+) lines?\]$/;
 
 export function MultilineInput({
   value,
@@ -59,6 +76,7 @@ export function MultilineInput({
   promptColor = 'cyan',
   consumedRef,
   onPasteImage,
+  onPasteText,
 }: Props) {
   const [cursor, setCursor] = useState(value.length);
 
@@ -118,6 +136,8 @@ export function MultilineInput({
   const pasteImagePromiseRef = useRef<Promise<{ n: number } | null> | null>(null);
   const onPasteImageRef = useRef(onPasteImage);
   onPasteImageRef.current = onPasteImage;
+  const onPasteTextRef = useRef(onPasteText);
+  onPasteTextRef.current = onPasteText;
 
   const { stdin, isRawModeSupported } = useStdin();
   useEffect(() => {
@@ -136,15 +156,30 @@ export function MultilineInput({
       // pipeline single-format — `value.split('\n')` for rendering, the
       // backslash-Enter newline insert path, etc.
       const normalized = body.replace(/\r\n?/g, '\n');
-      // Insert the text body immediately rather than waiting on the
-      // clipboard probe. Image probing takes 50–200ms (osascript shell-out
-      // on macOS), and deferring the insertion behind it caused pasted text
-      // to appear after a noticeable lag — or, in some terminals, to be
-      // dropped entirely when intervening renders updated the input value
-      // out from under the stale `insertNowRef` closure used by the
-      // deferred callback.
-      if (normalized) {
-        insertNowRef.current(normalized);
+      // Long multi-line pastes get collapsed to a `[Pasted text #N +M lines]`
+      // placeholder so the input area stays readable. The parent owns the
+      // body→placeholder mapping and expands it back to the original text
+      // on submit. Short / single-line pastes still flow inline.
+      let textToInsert = normalized;
+      const lineCount = normalized ? normalized.split('\n').length : 0;
+      if (
+        lineCount > PASTE_PLACEHOLDER_LINE_THRESHOLD &&
+        onPasteTextRef.current
+      ) {
+        const handle = onPasteTextRef.current(normalized);
+        if (handle) {
+          textToInsert = `[Pasted text #${handle.n} +${lineCount} lines]`;
+        }
+      }
+      // Insert immediately rather than waiting on the clipboard probe.
+      // Image probing takes 50–200ms (osascript shell-out on macOS), and
+      // deferring the insertion behind it caused pasted text to appear
+      // after a noticeable lag — or, in some terminals, to be dropped
+      // entirely when intervening renders updated the input value out from
+      // under the stale `insertNowRef` closure used by the deferred
+      // callback.
+      if (textToInsert) {
+        insertNowRef.current(textToInsert);
       }
       // The image probe still runs in parallel: if the clipboard also held
       // an image (rare; typically clipboards are text-only OR image-only),
@@ -238,6 +273,21 @@ export function MultilineInput({
 
       if (key.backspace || key.delete) {
         if (cursor > 0) {
+          // Atomic delete: if the character to the left of the cursor is
+          // the closing `]` of a `[Pasted text #N +M lines]` placeholder,
+          // delete the whole placeholder token in one keystroke rather
+          // than chipping away at it character by character. Anything
+          // else falls through to the normal single-char delete.
+          if (value[cursor - 1] === ']') {
+            const before = value.slice(0, cursor);
+            const match = before.match(PASTE_PLACEHOLDER_TAIL_RE);
+            if (match) {
+              const start = before.length - match[0].length;
+              const next = value.slice(0, start) + value.slice(cursor);
+              applyEdit(next, start);
+              return;
+            }
+          }
           const next = value.slice(0, cursor - 1) + value.slice(cursor);
           applyEdit(next, cursor - 1);
         }
