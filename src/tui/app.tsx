@@ -699,17 +699,24 @@ export function App({ config, resume, onSessionChange }: AppProps) {
           onSelect={(m) => {
             setCurrentModel(m);
             setModelPickerOpen(false);
+            replaceInput('');
             setBlocks((b) => [
               ...b,
               { kind: 'slash_output', text: `* model set to ${m}` },
             ]);
           }}
-          onCancel={() => setModelPickerOpen(false)}
+          onCancel={() => {
+            setModelPickerOpen(false);
+            replaceInput('');
+          }}
         />
       ) : mcpPickerOpen ? (
         <McpPicker
           mcpManager={mcpManagerRef.current!}
-          onCancel={() => setMcpPickerOpen(false)}
+          onCancel={() => {
+            setMcpPickerOpen(false);
+            replaceInput('');
+          }}
         />
       ) : contextPickerOpen ? (
         <ContextPicker
