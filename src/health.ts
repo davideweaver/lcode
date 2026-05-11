@@ -66,12 +66,29 @@ export async function probeLlm(
 }
 
 /**
- * llama.cpp exposes the loaded slot's `n_ctx` at `/props` (not under /v1).
- * Returns null on any failure — the caller falls back to config. The
- * `?model=` query is honored by the llamacpp-router proxy to pick the
- * right backend; raw llama.cpp ignores it.
+ * Read the live context window for `model` from whichever backend the
+ * endpoint speaks. Returns null on any failure — the caller falls back to
+ * config.
+ *
+ * - llama.cpp / llamacpp-router: `/props` exposes the loaded slot's
+ *   `n_ctx`. The `?model=` query is honored by the router proxy; raw
+ *   llama.cpp ignores it.
+ * - omlx: `/v1/models/status` returns a `models[]` array with each entry's
+ *   `max_context_window`.
  */
 async function probeContextWindow(
+  base: string,
+  model: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  return (
+    (await probeLlamaProps(base, model, headers, signal)) ??
+    (await probeOmlxStatus(base, model, headers, signal))
+  );
+}
+
+async function probeLlamaProps(
   base: string,
   model: string,
   headers: Record<string, string>,
@@ -86,6 +103,26 @@ async function probeContextWindow(
       n_ctx?: number;
     };
     const n = body.default_generation_settings?.n_ctx ?? body.n_ctx;
+    return typeof n === 'number' && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+async function probeOmlxStatus(
+  base: string,
+  model: string,
+  headers: Record<string, string>,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  try {
+    const res = await fetch(`${base}/v1/models/status`, { headers, signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as {
+      models?: Array<{ id?: string; max_context_window?: number }>;
+    };
+    const entry = body.models?.find((m) => m.id === model);
+    const n = entry?.max_context_window;
     return typeof n === 'number' && n > 0 ? n : null;
   } catch {
     return null;
