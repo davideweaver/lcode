@@ -1,4 +1,34 @@
-import 'dotenv/config';
+import { parse as dotenvParse } from 'dotenv';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+// Resolution order for LCODE_* environment variables:
+//   1. Shell environment (always wins)
+//   2. `${cwd}/.env` (project-local, e.g. lcode's own dev config)
+//   3. `~/.lcode/.env` (user-global fallback for `lc` from any directory)
+//
+// We deliberately only adopt LCODE_* variables from .env files — running
+// `lc` from another project's checkout (where the .env may legitimately
+// set things like NODE_TLS_REJECT_UNAUTHORIZED, DATABASE_URL, etc.)
+// shouldn't pollute lcode's process env or trigger Node TLS warnings.
+function loadEnvFile(path: string): void {
+  if (!existsSync(path)) return;
+  let parsed: Record<string, string>;
+  try {
+    parsed = dotenvParse(readFileSync(path));
+  } catch {
+    return;
+  }
+  for (const [k, v] of Object.entries(parsed)) {
+    if (!k.startsWith('LCODE_')) continue;
+    if (process.env[k] !== undefined) continue;
+    process.env[k] = v;
+  }
+}
+
+loadEnvFile(join(process.cwd(), '.env'));
+loadEnvFile(join(homedir(), '.lcode', '.env'));
 
 export interface LcodeConfig {
   llmUrl: string;

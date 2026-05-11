@@ -9,3 +9,4 @@ dist/
 .claude/
 coverage/
 keyprobe.js
+bench-results/
