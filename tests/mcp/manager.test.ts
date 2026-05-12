@@ -60,6 +60,165 @@ describe('adapt (single tool)', () => {
   });
 });
 
+describe('adapt — pollUrl envelope polling', () => {
+  const def: McpToolDef = {
+    name: 'agent_invoke',
+    description: 'Start a persistent agent',
+    inputSchema: { type: 'object' },
+  };
+  const ctx = {
+    cwd: '/',
+    signal: new AbortController().signal,
+    sessionState: { readFiles: new Set<string>() },
+  };
+
+  it('polls pollUrl until status=done and returns the formatted result', async () => {
+    const envelope = {
+      runId: 'r1',
+      pollUrl: 'http://localhost:9205/api/v1/agents/executions/r1',
+      status: 'running',
+      agentName: 'researcher',
+    };
+    const client = fakeClient({
+      call: async () => ({ content: JSON.stringify(envelope), isError: false }),
+    });
+    const responses = [
+      { ok: true, json: async () => ({ status: 'running' }) },
+      { ok: true, json: async () => ({ status: 'done', result: 'hello', durationMs: 1234, agentName: 'researcher' }) },
+    ];
+    const fetchSpy = vi.fn(async () => responses.shift() as any);
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      const result = await tool!.handler({ agentId: 'x', prompt: 'hi' }, ctx);
+      expect(result.isError).toBe(false);
+      expect(result.content).toContain('**researcher result** (completed in 1s)');
+      expect(result.content).toContain('hello');
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      const url = (fetchSpy.mock.calls[0]?.[0] ?? '') as string;
+      expect(url).toContain('pollUrl' in envelope ? envelope.pollUrl : '');
+      expect(url).toContain('wait=20');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('returns isError when the agent reports failed status', async () => {
+    const envelope = {
+      runId: 'r2',
+      pollUrl: 'http://localhost:9205/api/v1/agents/executions/r2',
+      status: 'running',
+      agentName: 'broken',
+    };
+    const client = fakeClient({
+      call: async () => ({ content: JSON.stringify(envelope), isError: false }),
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ status: 'failed', error: 'boom', agentName: 'broken' }),
+    })) as any);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      const result = await tool!.handler({}, ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain('**broken failed**: boom');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('forwards authHeader from the envelope into the fetch headers', async () => {
+    const envelope = {
+      runId: 'r3',
+      pollUrl: 'http://remote.example/api/v1/agents/executions/r3',
+      authHeader: 'Bearer secret-token',
+      status: 'running',
+    };
+    const client = fakeClient({
+      call: async () => ({ content: JSON.stringify(envelope), isError: false }),
+    });
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ status: 'done', result: 'ok' }),
+    })) as any;
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      await tool!.handler({}, ctx);
+      const opts = fetchSpy.mock.calls[0]?.[1];
+      expect(opts?.headers).toEqual({ Authorization: 'Bearer secret-token' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('passes through non-envelope content verbatim (no polling)', async () => {
+    const client = fakeClient({
+      call: async () => ({ content: 'plain text result', isError: false }),
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy as any);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      const result = await tool!.handler({}, ctx);
+      expect(result).toEqual({ content: 'plain text result', isError: false });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not poll when status is already done', async () => {
+    const envelope = {
+      runId: 'r4',
+      pollUrl: 'http://localhost:9205/api/v1/agents/executions/r4',
+      status: 'done',
+      result: 'already finished',
+    };
+    const client = fakeClient({
+      call: async () => ({ content: JSON.stringify(envelope), isError: false }),
+    });
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy as any);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      const result = await tool!.handler({}, ctx);
+      expect(result.content).toBe(JSON.stringify(envelope));
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('aborts polling when the context signal aborts', async () => {
+    const envelope = {
+      runId: 'r5',
+      pollUrl: 'http://localhost:9205/api/v1/agents/executions/r5',
+      status: 'running',
+    };
+    const client = fakeClient({
+      call: async () => ({ content: JSON.stringify(envelope), isError: false }),
+    });
+    const controller = new AbortController();
+    const fetchSpy = vi.fn(async (_url: string, opts: any) => {
+      await new Promise((resolve, reject) => {
+        opts.signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+      throw new Error('unreachable');
+    }) as any;
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const tool = adapt('xerro', def, client, () => {});
+      const pending = tool!.handler({}, { ...ctx, signal: controller.signal });
+      setTimeout(() => controller.abort(), 10);
+      const result = await pending;
+      expect(result).toEqual({ content: 'aborted', isError: true });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe('McpManager', () => {
   it('connects all servers in parallel and exposes adapter tools', async () => {
     const configs: McpServerConfig[] = [

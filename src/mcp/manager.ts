@@ -251,10 +251,111 @@ export function adapt(
     // that don't round-trip through zod-to-json-schema cleanly.
     inputSchema: z.unknown(),
     inputJsonSchema: def.inputSchema,
-    handler: async (input) => {
+    handler: async (input, ctx) => {
       const r = await client.callTool(def.name, input);
+      if (r.isError) return { content: r.content, isError: true };
+      const env = tryParseEnvelope(r.content);
+      // Workaround until lcode supports PostToolUse hooks — see pollUntilDone comment.
+      if (env && env.pollUrl && (env.status === 'running' || env.status === 'pending')) {
+        return pollUntilDone(env, ctx.signal);
+      }
       return { content: r.content, isError: r.isError };
     },
+  };
+}
+
+/**
+ * Envelope returned by MCP tools that finish their work asynchronously
+ * (xerro's `agent_invoke` is the canonical example: it returns immediately
+ * with a `runId` + `pollUrl` and completes the actual work server-side).
+ */
+interface PollableEnvelope {
+  runId?: string;
+  pollUrl?: string;
+  authHeader?: string;
+  status?: string;
+  agentName?: string;
+}
+
+function tryParseEnvelope(content: string): PollableEnvelope | null {
+  try {
+    const v = JSON.parse(content);
+    if (v && typeof v === 'object' && typeof v.pollUrl === 'string') {
+      return v as PollableEnvelope;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+const POLL_WAIT_SECS = 20;
+const MAX_TOTAL_MS = 3 * 60 * 1000;
+
+/**
+ * WORKAROUND: Inline polling for MCP tools that return a `pollUrl` envelope
+ * (xerro's `agent_invoke` is the canonical example — it returns immediately
+ * with `{ runId, pollUrl, status: 'running' }` and finishes the work async).
+ *
+ * In Claude Code, this polling is performed by a PostToolUse plugin hook:
+ *   ~/.claude/plugins/cache/xerro-service/xerro/<ver>/hooks/postToolUse.mjs
+ *   (matcher: ".*agent_invoke.*")
+ * The hook emits hookSpecificOutput.additionalContext with the final result.
+ *
+ * lcode has no plugin/hook system yet, so we mirror the hook's behavior here:
+ * same 20s long-poll cadence, same 3-minute cap, same auth-header forwarding.
+ *
+ * REMOVE THIS when lcode gains a Claude-Code-compatible PostToolUse hook
+ * runner — at that point the xerro plugin's hook can run unmodified and this
+ * adapter should go back to a plain `client.callTool` passthrough.
+ */
+async function pollUntilDone(
+  env: PollableEnvelope,
+  signal: AbortSignal,
+): Promise<{ content: string; isError: boolean }> {
+  const deadline = Date.now() + MAX_TOTAL_MS;
+  const name = env.agentName ?? 'Agent';
+  while (Date.now() < deadline) {
+    if (signal.aborted) return { content: 'aborted', isError: true };
+    const perReq = AbortSignal.any([
+      signal,
+      AbortSignal.timeout((POLL_WAIT_SECS + 5) * 1000),
+    ]);
+    let data: { status?: string; result?: string; error?: string; agentName?: string; durationMs?: number };
+    try {
+      const res = await fetch(`${env.pollUrl}?wait=${POLL_WAIT_SECS}`, {
+        signal: perReq,
+        headers: env.authHeader ? { Authorization: env.authHeader } : undefined,
+      });
+      if (!res.ok) {
+        return {
+          content: `Agent execution lookup failed (HTTP ${res.status}).`,
+          isError: true,
+        };
+      }
+      data = (await res.json()) as typeof data;
+    } catch {
+      if (signal.aborted) return { content: 'aborted', isError: true };
+      continue;
+    }
+    if (data.status === 'done') {
+      const secs = data.durationMs ? Math.round(data.durationMs / 1000) : null;
+      const timing = secs ? ` (completed in ${secs}s)` : '';
+      return {
+        content: `**${data.agentName ?? name} result**${timing}:\n\n${data.result ?? ''}`,
+        isError: false,
+      };
+    }
+    if (data.status === 'failed') {
+      return {
+        content: `**${data.agentName ?? name} failed**: ${data.error ?? 'Unknown error'}`,
+        isError: true,
+      };
+    }
+  }
+  return {
+    content: `Agent is still running after ${MAX_TOTAL_MS / 60000} minutes. runId: ${env.runId}`,
+    isError: false,
   };
 }
 
