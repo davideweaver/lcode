@@ -69,6 +69,21 @@ interface AppProps {
    */
   skipAgentFiles?: boolean;
   /**
+   * When true, skip MCP server discovery and connection entirely. The
+   * session runs with builtin tools only. Set by `--no-mcp`.
+   */
+  skipMcp?: boolean;
+  /**
+   * Replace the entire built-in system prompt with this string for every
+   * turn in this session. Set by `--sys-prompt`.
+   */
+  overrideSystemPrompt?: string;
+  /**
+   * Forwarded to the LLM as `chat_template_kwargs.enable_thinking`. Default
+   * true. Set false via `--no-thinking` for latency-sensitive runs.
+   */
+  enableThinking?: boolean;
+  /**
    * Called whenever the session id changes (incl. when the loop's first
    * `system: init` arrives for a brand-new chat). The CLI uses this to
    * show a "Resume this session with: ..." hint after the TUI exits.
@@ -76,7 +91,7 @@ interface AppProps {
   onSessionChange?: (sessionId: string | undefined) => void;
 }
 
-export function App({ config, resume, skipAgentFiles, onSessionChange }: AppProps) {
+export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPrompt, enableThinking, onSessionChange }: AppProps) {
   const { exit } = useApp();
   const [health, setHealth] = useState<HealthResult | null>(null);
   const [blocks, setBlocks] = useState<UiBlock[]>([]);
@@ -396,6 +411,12 @@ export function App({ config, resume, skipAgentFiles, onSessionChange }: AppProp
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (skipMcp) {
+        const manager = new McpManager([]);
+        mcpManagerRef.current = manager;
+        if (!cancelled) setMcpToolsReady(true);
+        return;
+      }
       const [entries, disabled] = await Promise.all([
         loadMcpServers(cwd),
         loadDisabledServers(),
@@ -411,7 +432,7 @@ export function App({ config, resume, skipAgentFiles, onSessionChange }: AppProp
       const m = mcpManagerRef.current;
       if (m) void m.close();
     };
-  }, [cwd]);
+  }, [cwd, skipMcp]);
 
   // Seed tokensUsed with a real baseline (system prompt + tool schemas) once
   // the async-loaded sources are ready. Replaces the legacy 700-token guess
@@ -648,6 +669,8 @@ export function App({ config, resume, skipAgentFiles, onSessionChange }: AppProp
           claudeMdFiles,
           agentFiles,
           mcpManager: mcpManagerRef.current!,
+          overrideSystemPrompt,
+          enableThinking,
         });
         await drainStream(stream, setBlocks, setSessionId, setTokensUsed, setTokensUsedVerified);
       } catch (err) {

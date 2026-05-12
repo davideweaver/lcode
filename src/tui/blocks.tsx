@@ -91,11 +91,12 @@ function BlockView({
         block.status === "pending" ? <BlinkingDot color={color} /> : <Text color={color}>●</Text>;
       const mcp = parseMcpName(block.name);
       if (mcp) {
+        const argsSummary = summarizeInput(block.input);
         return (
           <Box flexDirection="column" marginTop={1}>
             <Text color={color}>
               {indicator} Calling <Text bold>{mcp.server}</Text>
-              <Text color={MUTED}> · {mcp.tool}</Text>
+              <Text color={MUTED}> · {mcp.tool}{argsSummary ? `(${argsSummary})` : ""}</Text>
             </Text>
             {block.status !== "pending" && (
               <McpToolOutput

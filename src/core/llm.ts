@@ -28,6 +28,14 @@ export interface LlmStreamArgs {
    * before the loop's degenerate-output detector kicks in.
    */
   maxTokens?: number;
+  /**
+   * Send `chat_template_kwargs.enable_thinking` to the server. Default true
+   * (matches prior unconditional behavior). Set false to skip the hidden
+   * reasoning phase — important for latency-sensitive callers like voice
+   * assistants where prefill of thinking tokens delays the first visible
+   * response by seconds.
+   */
+  enableThinking?: boolean;
 }
 
 export interface LlmFinalMessage {
@@ -95,7 +103,7 @@ export async function* streamLlm(
     tool_choice: args.tools.length > 0 ? 'auto' : undefined,
     // Hint to llama.cpp / Qwen3-style chat templates: produce reasoning when
     // the model supports it. Servers that don't recognize this field ignore it.
-    chat_template_kwargs: { enable_thinking: true },
+    chat_template_kwargs: { enable_thinking: args.enableThinking ?? true },
   };
   const res = await fetch(url, {
     method: 'POST',

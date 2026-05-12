@@ -30,6 +30,12 @@ export interface LoopArgs {
   apiKey: string;
   tools: Tool[];
   customSystemPrompt?: string;
+  /**
+   * Bypass `buildSystemPrompt` entirely and send this string as the system
+   * prompt. Skips agent files, CLAUDE.md, environment, and tool guidance —
+   * tool schemas are still attached via the OpenAI `tools[]` field.
+   */
+  overrideSystemPrompt?: string;
   initialMessages: AnthropicMessage[];
   newUserPrompt: string | ContentBlock[];
   maxTurns: number;
@@ -48,6 +54,8 @@ export interface LoopArgs {
   compactThreshold?: number;
   /** Recent user/assistant turn boundaries kept verbatim through tier-2 summarization. */
   compactPreserveTail?: number;
+  /** Forwarded to the LLM. Default true. */
+  enableThinking?: boolean;
 }
 
 export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
@@ -69,14 +77,17 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
 
   const sessionState = args.sessionState ?? newSessionState();
 
-  const systemPrompt = buildSystemPrompt({
-    cwd: args.cwd,
-    tools: enabledTools,
-    customSystemPrompt: args.customSystemPrompt,
-    permissionMode: args.permissionMode,
-    claudeMdFiles: args.claudeMdFiles,
-    agentFiles: args.agentFiles,
-  });
+  const systemPrompt =
+    args.overrideSystemPrompt !== undefined
+      ? args.overrideSystemPrompt
+      : buildSystemPrompt({
+          cwd: args.cwd,
+          tools: enabledTools,
+          customSystemPrompt: args.customSystemPrompt,
+          permissionMode: args.permissionMode,
+          claudeMdFiles: args.claudeMdFiles,
+          agentFiles: args.agentFiles,
+        });
 
   // Compaction overhead — system prompt + tool schemas. Computed once
   // because they don't change across the loop's iterations. Used by the
@@ -371,6 +382,7 @@ async function* streamWithPartials(
     messages: history,
     tools: registry.list(),
     signal: args.signal,
+    enableThinking: args.enableThinking,
   });
   while (true) {
     const next = await gen.next();

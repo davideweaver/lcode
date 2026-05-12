@@ -29,6 +29,19 @@ export interface QueryOptions {
   cwd?: string;
   model?: string;
   systemPrompt?: string;
+  /**
+   * Replace the entire built-in system prompt with this string. Agent files,
+   * CLAUDE.md, environment, and tool guidance are all skipped. Tool schemas
+   * still go on the OpenAI `tools[]` field. Useful for profiling and for
+   * callers that want full control over the prompt shape.
+   */
+  overrideSystemPrompt?: string;
+  /**
+   * Send `chat_template_kwargs.enable_thinking` to the LLM. Default true.
+   * Set false to skip the hidden reasoning phase — recommended for voice
+   * assistants and other latency-sensitive callers.
+   */
+  enableThinking?: boolean;
   allowedTools?: string[];
   disallowedTools?: string[];
   maxTurns?: number;
@@ -128,6 +141,8 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     apiKey: config.apiKey,
     tools,
     customSystemPrompt: options.systemPrompt,
+    overrideSystemPrompt: options.overrideSystemPrompt,
+    enableThinking: options.enableThinking,
     initialMessages,
     newUserPrompt: options.prompt,
     maxTurns: options.maxTurns ?? DEFAULT_MAX_TURNS,

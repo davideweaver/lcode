@@ -4,6 +4,7 @@ import { render } from 'ink';
 import { createElement } from 'react';
 import { loadConfig } from '../src/config.js';
 import { probeLlm } from '../src/health.js';
+import { runHeadless } from '../src/headless.js';
 import { App } from '../src/tui/app.js';
 import { detectTerminalTheme } from '../src/tui/theme-detect.js';
 
@@ -19,9 +20,37 @@ program
     '--no-agent-files',
     'Skip loading PERSONA/HUMAN/CAPABILITIES/INSTRUCTIONS from ~/.lcode/settings.json; use built-in defaults',
   )
-  .action(async (opts: { resume?: string; model?: string; agentFiles: boolean }) => {
+  .option(
+    '-p, --prompt <text>',
+    'Run a single non-interactive turn, stream the response to stdout, print per-phase timings to stderr, and exit',
+  )
+  .option('--no-mcp', 'Skip MCP server discovery and connection; run with builtin tools only')
+  .option(
+    '--sys-prompt <text>',
+    'Replace the entire default system prompt with this string. Skips agent files, CLAUDE.md, environment, and tool guidance.',
+  )
+  .option(
+    '--no-thinking',
+    'Disable the LLM thinking phase (chat_template_kwargs.enable_thinking=false). Recommended for voice/latency-sensitive runs.',
+  )
+  .action(async (opts: { resume?: string; model?: string; agentFiles: boolean; prompt?: string; mcp: boolean; sysPrompt?: string; thinking: boolean }) => {
     const config = loadConfig();
     if (opts.model) config.model = opts.model;
+
+    if (opts.prompt !== undefined) {
+      const code = await runHeadless({
+        prompt: opts.prompt,
+        config,
+        model: opts.model,
+        resume: opts.resume,
+        skipAgentFiles: !opts.agentFiles,
+        skipMcp: !opts.mcp,
+        overrideSystemPrompt: opts.sysPrompt,
+        enableThinking: opts.thinking,
+      });
+      process.exit(code);
+    }
+
     // Detect the terminal theme before Ink takes over stdin. The OSC 11
     // exchange has to finish before render() runs, so we await here. If
     // detection fails the helper resolves to 'dark'.
@@ -36,6 +65,9 @@ program
         config,
         resume: opts.resume,
         skipAgentFiles: !opts.agentFiles,
+        skipMcp: !opts.mcp,
+        overrideSystemPrompt: opts.sysPrompt,
+        enableThinking: opts.thinking,
         onSessionChange: (id) => {
           if (id) lastSessionId = id;
         },

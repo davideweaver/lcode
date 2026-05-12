@@ -287,6 +287,86 @@ const MD_BULLET = 'gray';
  * only touch characters that have a 1:1 ASCII equivalent.
  */
 function normalizeMd(s: string): string {
+  return replaceLatexMath(_normalizeUnicodeLookalikes(s));
+}
+
+/**
+ * Map of common LaTeX symbol commands (single-token, no arguments) to their
+ * Unicode equivalents. Local LLMs trained on math-heavy text often reach for
+ * these even in prose — `$\rightarrow$` instead of `→`. We only replace a
+ * closed whitelist of recognized names, so unrelated backslash escapes
+ * (`\n`, `\t`, path separators) are left alone.
+ */
+const LATEX_SYMBOLS: Record<string, string> = {
+  rightarrow: '→', to: '→', leftarrow: '←', gets: '←',
+  Rightarrow: '⇒', Leftarrow: '⇐', implies: '⇒', impliedby: '⇐',
+  leftrightarrow: '↔', Leftrightarrow: '⇔', iff: '⇔',
+  uparrow: '↑', downarrow: '↓', updownarrow: '↕',
+  Uparrow: '⇑', Downarrow: '⇓',
+  mapsto: '↦', hookrightarrow: '↪', hookleftarrow: '↩',
+  longrightarrow: '⟶', longleftarrow: '⟵',
+  leq: '≤', le: '≤', geq: '≥', ge: '≥',
+  neq: '≠', ne: '≠', approx: '≈', sim: '∼', simeq: '≃',
+  equiv: '≡', cong: '≅', propto: '∝',
+  pm: '±', mp: '∓', times: '×', div: '÷',
+  cdot: '·', ast: '∗', star: '⋆', circ: '∘', bullet: '•',
+  oplus: '⊕', ominus: '⊖', otimes: '⊗', odot: '⊙',
+  in: '∈', notin: '∉', ni: '∋',
+  subset: '⊂', supset: '⊃', subseteq: '⊆', supseteq: '⊇',
+  cup: '∪', cap: '∩', setminus: '∖',
+  emptyset: '∅', varnothing: '∅',
+  forall: '∀', exists: '∃', nexists: '∄',
+  neg: '¬', lnot: '¬', land: '∧', wedge: '∧', lor: '∨', vee: '∨',
+  infty: '∞', ldots: '…', cdots: '⋯', dots: '…', vdots: '⋮',
+  partial: '∂', nabla: '∇', surd: '√', angle: '∠',
+  prime: '′', therefore: '∴', because: '∵',
+  alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ',
+  epsilon: 'ε', varepsilon: 'ε', zeta: 'ζ', eta: 'η',
+  theta: 'θ', vartheta: 'ϑ', iota: 'ι', kappa: 'κ',
+  lambda: 'λ', mu: 'μ', nu: 'ν', xi: 'ξ', omicron: 'ο',
+  pi: 'π', varpi: 'ϖ', rho: 'ρ', varrho: 'ϱ',
+  sigma: 'σ', varsigma: 'ς', tau: 'τ', upsilon: 'υ',
+  phi: 'φ', varphi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω',
+  Gamma: 'Γ', Delta: 'Δ', Theta: 'Θ', Lambda: 'Λ', Xi: 'Ξ',
+  Pi: 'Π', Sigma: 'Σ', Upsilon: 'Υ', Phi: 'Φ', Psi: 'Ψ', Omega: 'Ω',
+};
+
+const LATEX_GLYPH_RE = new RegExp(
+  '[' +
+    [...new Set(Object.values(LATEX_SYMBOLS))]
+      .map((c) => c.replace(/[\\\]^-]/g, '\\$&'))
+      .join('') +
+    ']',
+);
+
+/**
+ * Replace LaTeX-style math notation that local LLMs sometimes leak into
+ * prose. Two phases:
+ *   1. Replace every recognized `\<name>` with its Unicode glyph. The
+ *      lookup table is the whitelist — `\n`, `\t`, paths are untouched.
+ *   2. Strip `$...$`, `\(...\)`, `\[...\]` delimiters whose inner content
+ *      now contains a glyph we inserted and no remaining `\<command>`.
+ *      Conservative on `$` so dollar amounts in prose are unaffected.
+ */
+export function replaceLatexMath(s: string): string {
+  const replaced = s.replace(/\\([A-Za-z]+)/g, (m, name) =>
+    Object.prototype.hasOwnProperty.call(LATEX_SYMBOLS, name)
+      ? LATEX_SYMBOLS[name]!
+      : m,
+  );
+  const stripDelimited = (str: string, re: RegExp): string =>
+    str.replace(re, (m: string, inner: string) =>
+      LATEX_GLYPH_RE.test(inner) && !/\\[A-Za-z]/.test(inner)
+        ? inner.trim()
+        : m,
+    );
+  let out = stripDelimited(replaced, /\$([^$\n]+?)\$/g);
+  out = stripDelimited(out, /\\\(([\s\S]*?)\\\)/g);
+  out = stripDelimited(out, /\\\[([\s\S]*?)\\\]/g);
+  return out;
+}
+
+function _normalizeUnicodeLookalikes(s: string): string {
   return s
     .replace(/[＊∗✱∗]/g, '*')
     .replace(/ /g, ' ');
