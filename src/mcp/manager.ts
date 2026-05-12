@@ -290,7 +290,7 @@ function tryParseEnvelope(content: string): PollableEnvelope | null {
 }
 
 const POLL_WAIT_SECS = 20;
-const MAX_TOTAL_MS = 3 * 60 * 1000;
+const MAX_TOTAL_MS = 10 * 60 * 1000;
 
 /**
  * WORKAROUND: Inline polling for MCP tools that return a `pollUrl` envelope
