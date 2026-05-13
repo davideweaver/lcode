@@ -107,6 +107,24 @@ function BlockView({
           </Box>
         );
       }
+      if (block.name === "Skill") {
+        // Render model-invoked Skill calls compactly — same look as a
+        // user-fired `/<name>` (see the `skill_use` case below). The full
+        // SKILL.md body is in the model's context as the tool result; we
+        // don't repeat it in the transcript.
+        const skillName =
+          typeof block.input.skill_name === "string" ? block.input.skill_name : "(unknown)";
+        const argsStr = typeof block.input.args === "string" ? block.input.args : "";
+        const summary = argsStr ? `${skillName}: ${argsStr}` : skillName;
+        return (
+          <Box marginTop={1}>
+            <Text color={color}>
+              {indicator} <Text bold>Skill</Text>
+              <Text color={MUTED}>({summary})</Text>
+            </Text>
+          </Box>
+        );
+      }
       if (block.name === "WebFetch") {
         const url = typeof block.input.url === "string" ? block.input.url : "";
         return (
@@ -199,6 +217,18 @@ function BlockView({
           <Text color={MUTED}>{block.text}</Text>
         </Box>
       );
+    case "skill_use": {
+      const summary = block.args ? `${block.skillName}: ${block.args}` : block.skillName;
+      return (
+        <Box marginTop={1}>
+          <Text color="green">
+            <Text>● </Text>
+            <Text bold>Skill</Text>
+            <Text color={MUTED}>({summary})</Text>
+          </Text>
+        </Box>
+      );
+    }
     case "compaction": {
       const tierLabel = block.subtype === "tier1" ? "tier 1 — tool results truncated" : "tier 2 — summarized";
       const saved = block.savedTokens > 0 ? ` (~${formatBrief(block.savedTokens)} tokens reclaimed)` : "";

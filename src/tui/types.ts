@@ -38,6 +38,16 @@ export type UiBlock =
   | { kind: 'error'; text: string }
   | { kind: 'slash_output'; text: string }
   | {
+      /**
+       * Shown when the user fires a skill via `/<skill-name>`. The rendered
+       * SKILL.md body is sent to the model verbatim — the UI just shows a
+       * tool-call-style summary so the transcript stays tidy.
+       */
+      kind: 'skill_use';
+      skillName: string;
+      args: string;
+    }
+  | {
       kind: 'compaction';
       subtype: 'tier1' | 'tier2';
       savedTokens: number;

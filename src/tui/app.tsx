@@ -39,6 +39,10 @@ import { defaultAgentFiles, loadAgentFiles, type AgentFiles } from '../prompts/a
 import { loadMcpServers } from '../mcp/config.js';
 import { loadDisabledServers } from '../mcp/disabled.js';
 import { McpManager } from '../mcp/manager.js';
+import { findProjectRoot, loadSkills } from '../skills/loader.js';
+import { loadEnabled, setEnabled } from '../skills/enabled.js';
+import type { Skill } from '../skills/types.js';
+import { SkillsPicker } from './skills-picker.js';
 
 type HeaderItem = { kind: 'banner'; health: HealthResult };
 
@@ -111,6 +115,10 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [mcpPickerOpen, setMcpPickerOpen] = useState(false);
   const [contextPickerOpen, setContextPickerOpen] = useState(false);
+  const [skillsPickerOpen, setSkillsPickerOpen] = useState(false);
+  const [skills, setSkills] = useState<Skill[]>([]);
+  const [enabledSkillNames, setEnabledSkillNames] = useState<Set<string>>(new Set());
+  const projectRootRef = useRef<string | null>(null);
   const [currentModel, setCurrentModel] = useState(config.model);
   const [claudeMdFiles, setClaudeMdFiles] = useState<ClaudeMdFile[] | undefined>(undefined);
   const [agentFiles, setAgentFiles] = useState<AgentFiles | undefined>(undefined);
@@ -242,7 +250,7 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
   );
   const busy = turnStatus.kind === 'working';
   const slashOpen = !busy && isSlashPopupOpen(input);
-  const slashMatches = slashOpen ? matchCommands(getSlashQuery(input)) : [];
+  const slashMatches = slashOpen ? matchCommands(getSlashQuery(input), skills, enabledSkillNames) : [];
 
   // Reset highlight to first match whenever the slash query changes.
   useEffect(() => {
@@ -390,6 +398,29 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
   // effect until the user starts a new session.
   useEffect(() => {
     loadClaudeMdFiles(cwd).then(setClaudeMdFiles);
+  }, [cwd]);
+
+  // Skills: discover at mount and load the per-project enabled set. The
+  // onSubmit handler re-runs both before each query() so mid-session edits
+  // to SKILL.md frontmatter and toggles via /skills both propagate to the
+  // next user turn without needing a session restart.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const root = await findProjectRoot(cwd);
+      if (cancelled) return;
+      projectRootRef.current = root;
+      const [discovered, enabled] = await Promise.all([
+        loadSkills(cwd),
+        loadEnabled(root),
+      ]);
+      if (cancelled) return;
+      setSkills(discovered);
+      setEnabledSkillNames(enabled);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [cwd]);
 
   // Load ~/.lcode agent files (PERSONA/HUMAN/CAPABILITIES/INSTRUCTIONS) once
@@ -559,27 +590,62 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
     { isActive: process.stdin.isTTY === true },
   );
 
+  const onSubmitRef = useRef<((prompt: string) => Promise<void>) | null>(null);
+  // Set by `sendUserPrompt` when the next user turn should be rendered as
+  // something other than the default `user_prompt` block (e.g. a `skill_use`
+  // summary). Consumed and cleared on the next onSubmit entry. Also signals
+  // "synthetic prompt" — skip history recording so the original /<name>
+  // typed input stays in up-arrow recall, not the rendered SKILL.md body.
+  const pendingDisplayBlockRef = useRef<UiBlock | null>(null);
   const onSubmit = useCallback(
     async (prompt: string) => {
       let trimmed = prompt.trim();
       if (!trimmed || busy) return;
       setInput('');
+      const displayOverride = pendingDisplayBlockRef.current;
+      pendingDisplayBlockRef.current = null;
       // Record in history (skip consecutive dupes) and reset navigation.
+      // Skip when this is a synthetic prompt fired by the slash dispatcher.
       const history = historyRef.current;
-      if (history[history.length - 1] !== trimmed) history.push(trimmed);
+      if (!displayOverride && history[history.length - 1] !== trimmed) {
+        history.push(trimmed);
+      }
       setHistoryIdx(null);
       draftRef.current = '';
+
+      // Per-submission skills refresh: re-discover from disk and re-read the
+      // enabled set so mid-session edits propagate to this and subsequent
+      // turns. Use the LOCAL freshSkills/freshEnabled values for the slash
+      // context and the query() options — React state updates are async.
+      let freshSkills = skills;
+      let freshEnabled = enabledSkillNames;
+      try {
+        const root = projectRootRef.current ?? (await findProjectRoot(cwd));
+        projectRootRef.current = root;
+        const [discovered, enabled] = await Promise.all([
+          loadSkills(cwd),
+          loadEnabled(root),
+        ]);
+        freshSkills = discovered;
+        freshEnabled = enabled;
+        setSkills(discovered);
+        setEnabledSkillNames(enabled);
+      } catch {
+        // Disk read failures fall back to the last in-memory snapshot.
+      }
 
       // If the slash popup is open with at least one match, Enter runs the
       // highlighted command — even if the user only typed `/` or a partial
       // prefix that doesn't match a command name exactly.
-      if (isSlashPopupOpen(trimmed)) {
-        const matches = matchCommands(getSlashQuery(trimmed));
+      if (!displayOverride && isSlashPopupOpen(trimmed)) {
+        const matches = matchCommands(getSlashQuery(trimmed), freshSkills, freshEnabled);
         const selected = matches[slashIdx] ?? matches[0];
         if (selected) trimmed = '/' + selected.name;
       }
 
-      if (trimmed.startsWith('/')) {
+      // Synthetic prompts (e.g. skill bodies from sendUserPrompt) skip the
+      // slash dispatcher even if the body happens to start with `/`.
+      if (!displayOverride && trimmed.startsWith('/')) {
         await maybeRunSlashCommand(trimmed, {
           cwd,
           config,
@@ -602,6 +668,18 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
           openModelPicker: () => setModelPickerOpen(true),
           openMcpPicker: () => setMcpPickerOpen(true),
           openContextPicker: () => setContextPickerOpen(true),
+          openSkillsPicker: () => setSkillsPickerOpen(true),
+          skills: freshSkills,
+          enabledSkillNames: freshEnabled,
+          sendUserPrompt: (text, displayBlock) => {
+            // Kick off a fresh user turn with the rendered skill body. Runs
+            // through the same onSubmit path so token accounting, abort
+            // handling, and query setup are identical to a typed prompt.
+            // The optional displayBlock replaces the default user_prompt UI
+            // block, keeping the rendered SKILL.md body out of the transcript.
+            if (displayBlock) pendingDisplayBlockRef.current = displayBlock;
+            void onSubmitRef.current?.(text);
+          },
           runCompactNow,
           mcpManager: mcpManagerRef.current!,
           exit,
@@ -625,7 +703,7 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
       const userContent = buildUserContent(trimmed, attachmentsRef.current);
       attachmentsRef.current = new Map();
 
-      const userBlock: UiBlock = { kind: 'user_prompt', text: trimmed };
+      const userBlock: UiBlock = displayOverride ?? { kind: 'user_prompt', text: trimmed };
       setBlocks((b) => [...b, userBlock]);
       const startedAt = Date.now();
       setTurnStatus({ kind: 'working', startedAt });
@@ -668,6 +746,7 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
           config: { ...config, contextWindow: runContextWindow },
           claudeMdFiles,
           agentFiles,
+          skills: freshSkills.filter((s) => freshEnabled.has(s.name)),
           mcpManager: mcpManagerRef.current!,
           overrideSystemPrompt,
           enableThinking,
@@ -692,8 +771,9 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
         abortRef.current = null;
       }
     },
-    [busy, config, effectiveContextWindow, cwd, sessionId, slashIdx, claudeMdFiles, agentFiles, currentModel, exit, replaceInput],
+    [busy, config, effectiveContextWindow, cwd, sessionId, slashIdx, claudeMdFiles, agentFiles, currentModel, exit, replaceInput, skills, enabledSkillNames, runCompactNow, overrideSystemPrompt, enableThinking, health],
   );
+  onSubmitRef.current = onSubmit;
 
   const headerItems = useMemo<HeaderItem[]>(() => {
     return health ? [{ kind: 'banner', health }] : [];
@@ -769,6 +849,29 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
             replaceInput('');
           }}
         />
+      ) : skillsPickerOpen ? (
+        <SkillsPicker
+          skills={skills}
+          enabled={enabledSkillNames}
+          onToggle={async (name) => {
+            try {
+              const root = projectRootRef.current ?? (await findProjectRoot(cwd));
+              projectRootRef.current = root;
+              const next = await setEnabled(root, name, !enabledSkillNames.has(name));
+              setEnabledSkillNames(next);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              setBlocks((b) => [
+                ...b,
+                { kind: 'error', text: `Failed to toggle skill ${name}: ${msg}` },
+              ]);
+            }
+          }}
+          onCancel={() => {
+            setSkillsPickerOpen(false);
+            replaceInput('');
+          }}
+        />
       ) : contextPickerOpen ? (
         <ContextPicker
           blocks={blocks}
@@ -807,7 +910,12 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
           <Divider />
 
           {slashOpen ? (
-            <SlashPopup input={input} selectedIdx={slashIdx} />
+            <SlashPopup
+              input={input}
+              selectedIdx={slashIdx}
+              skills={skills}
+              enabledSkillNames={enabledSkillNames}
+            />
           ) : (
             <StatusLine
               folderLabel={folderLabel}

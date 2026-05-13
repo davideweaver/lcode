@@ -2,7 +2,21 @@ import { describe, expect, it } from 'vitest';
 import type { LcodeConfig } from '../src/config.js';
 import { McpManager } from '../src/mcp/manager.js';
 import { matchCommands, maybeRunSlashCommand, type SlashContext } from '../src/tui/slash.js';
+import type { Skill } from '../src/skills/types.js';
 import type { UiBlock } from '../src/tui/types.js';
+
+function mkSkill(name: string, body = 'Skill body.', userInvocable = true): Skill {
+  return {
+    name,
+    scope: 'user',
+    source: `/tmp/${name}/SKILL.md`,
+    dir: `/tmp/${name}`,
+    description: `Test skill ${name}`,
+    disableModelInvocation: false,
+    userInvocable,
+    body,
+  };
+}
 
 function mkCtx(overrides: Partial<SlashContext> = {}): {
   ctx: SlashContext;
@@ -50,6 +64,12 @@ function mkCtx(overrides: Partial<SlashContext> = {}): {
       openResumePicker: () => resumed.count++,
       openModelPicker: () => modelPicked.count++,
       openMcpPicker: () => mcpPicked.count++,
+      openContextPicker: () => {},
+      openSkillsPicker: () => {},
+      skills: [],
+      enabledSkillNames: new Set<string>(),
+      sendUserPrompt: () => {},
+      runCompactNow: async () => {},
       mcpManager: new McpManager([]),
       exit: () => exited.count++,
       ...overrides,
@@ -166,5 +186,61 @@ describe('maybeRunSlashCommand', () => {
     await maybeRunSlashCommand('/mcp', ctx);
     expect(mcpPicked.count).toBe(0);
     expect((blocks[0] as { text: string }).text).toMatch(/none configured/);
+  });
+
+  it('fires an enabled skill via /<name>', async () => {
+    const sent: { text: string; display?: unknown }[] = [];
+    const { ctx } = mkCtx({
+      skills: [mkSkill('hello', 'Greet $ARGUMENTS!')],
+      enabledSkillNames: new Set(['hello']),
+      sendUserPrompt: (text, display) => sent.push({ text, display }),
+    });
+    const handled = await maybeRunSlashCommand('/hello Dave', ctx);
+    expect(handled).toBe(true);
+    expect(sent).toHaveLength(1);
+    // Body sent to the model: provenance line + rendered body. The
+    // provenance line tells the model "the skill is already invoked, don't
+    // call the Skill tool again" — otherwise smaller models loop.
+    expect(sent[0]!.text).toContain('"hello" skill was invoked');
+    expect(sent[0]!.text).toContain('Do not call the Skill tool');
+    expect(sent[0]!.text).toContain('Greet Dave!');
+    expect(sent[0]!.display).toMatchObject({
+      kind: 'skill_use',
+      skillName: 'hello',
+      args: 'Dave',
+    });
+  });
+
+  it('disabled skill name reports the hint instead of firing', async () => {
+    const sent: { text: string }[] = [];
+    const { ctx, blocks } = mkCtx({
+      skills: [mkSkill('hello')],
+      enabledSkillNames: new Set<string>(),
+      sendUserPrompt: (text) => sent.push({ text }),
+    });
+    await maybeRunSlashCommand('/hello', ctx);
+    expect(sent).toHaveLength(0);
+    expect((blocks[0] as { text: string }).text).toMatch(/disabled/i);
+    expect((blocks[0] as { text: string }).text).toMatch(/\/skills/);
+  });
+
+  it('unknown name falls back to Unknown command even with skills present', async () => {
+    const { ctx, blocks } = mkCtx({
+      skills: [mkSkill('hello')],
+      enabledSkillNames: new Set(['hello']),
+    });
+    await maybeRunSlashCommand('/nope', ctx);
+    expect((blocks[0] as { text: string }).text).toMatch(/Unknown command/);
+  });
+
+  it('matchCommands includes enabled skills', () => {
+    const matches = matchCommands('he', [mkSkill('hello')], new Set(['hello'])).map((c) => c.name);
+    expect(matches).toContain('help');
+    expect(matches).toContain('hello');
+  });
+
+  it('matchCommands excludes disabled skills', () => {
+    const matches = matchCommands('he', [mkSkill('hello')], new Set<string>()).map((c) => c.name);
+    expect(matches).not.toContain('hello');
   });
 });

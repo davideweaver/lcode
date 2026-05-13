@@ -1,6 +1,8 @@
 import { Box, Text } from 'ink';
 import type { LcodeConfig } from '../config.js';
 import type { McpManager } from '../mcp/manager.js';
+import { renderSkillBody } from '../skills/render.js';
+import type { Skill } from '../skills/types.js';
 import type { UiBlock } from './types.js';
 
 export interface SlashContext {
@@ -21,6 +23,19 @@ export interface SlashContext {
   openModelPicker: () => void;
   openMcpPicker: () => void;
   openContextPicker: () => void;
+  openSkillsPicker: () => void;
+  /** Full discovered skill list (used by /skills and the fallback dispatcher). */
+  skills: Skill[];
+  /** Names of skills currently enabled for this project. */
+  enabledSkillNames: Set<string>;
+  /**
+   * Inject a user-role prompt into the conversation. Used by the slash
+   * dispatcher to fire a skill's rendered SKILL.md body as a synthetic
+   * user turn. Pass `displayBlock` to replace the default `user_prompt`
+   * UI block — e.g. a `skill_use` summary so the rendered body isn't
+   * shown verbatim in the transcript.
+   */
+  sendUserPrompt: (text: string, displayBlock?: UiBlock) => void;
   /**
    * Force-compact the current session. Loads the JSONL, runs the compactor
    * with `force: true`, appends a marker. Emits a `compaction` block on
@@ -147,6 +162,13 @@ export const COMMANDS: SlashCommand[] = [
     },
   },
   {
+    name: 'skills',
+    description: 'Browse discovered skills. Enable/disable per project.',
+    execute: (_args, ctx) => {
+      ctx.openSkillsPicker();
+    },
+  },
+  {
     name: 'compact',
     description: 'Free up context: truncate old tool results, summarize if still over.',
     execute: async (_args, ctx) => {
@@ -163,12 +185,54 @@ export const COMMANDS: SlashCommand[] = [
 ];
 
 /**
- * Match a slash query against COMMANDS. Returns commands whose names
- * start with the query (case-insensitive), in registration order.
+ * Match a slash query against COMMANDS and (enabled, user-invocable) skills.
+ * Returns matches whose names start with the query (case-insensitive).
+ * Built-ins come first, then skills.
  */
-export function matchCommands(query: string): SlashCommand[] {
+export function matchCommands(
+  query: string,
+  skills: Skill[] = [],
+  enabled: Set<string> = new Set(),
+): SlashCommand[] {
   const q = query.toLowerCase();
-  return COMMANDS.filter((c) => c.name.toLowerCase().startsWith(q));
+  const builtins = COMMANDS.filter((c) => c.name.toLowerCase().startsWith(q));
+  const builtinNames = new Set(builtins.map((c) => c.name));
+  const skillEntries = skills
+    .filter((s) => enabled.has(s.name) && s.userInvocable !== false)
+    .filter((s) => !builtinNames.has(s.name))
+    .filter((s) => s.name.toLowerCase().startsWith(q))
+    .map((s) => skillAsCommand(s));
+  return [...builtins, ...skillEntries];
+}
+
+function skillAsCommand(skill: Skill): SlashCommand {
+  return {
+    name: skill.name,
+    description: skill.description || '(skill)',
+    execute: (args, ctx) => {
+      ctx.sendUserPrompt(buildSkillInvocationMessage(skill, args), {
+        kind: 'skill_use',
+        skillName: skill.name,
+        args,
+      });
+    },
+  };
+}
+
+/**
+ * Wrap the rendered SKILL.md body with an explicit provenance line so the
+ * model understands the body has already been loaded for it — and doesn't
+ * call the Skill tool a second time to "properly invoke" the same skill.
+ * Without this, small/medium models tend to re-invoke and the body shows
+ * up twice in the transcript.
+ */
+function buildSkillInvocationMessage(skill: Skill, args: string): string {
+  const argHint = args ? ` with args: "${args}"` : '';
+  return [
+    `The "${skill.name}" skill was invoked by the user${argHint}. The following are its instructions — follow them directly. Do not call the Skill tool to invoke it again.`,
+    '',
+    renderSkillBody(skill, args),
+  ].join('\n');
 }
 
 /**
@@ -185,14 +249,31 @@ export async function maybeRunSlashCommand(
   const [name, ...rest] = trimmed.split(/\s+/);
   const args = rest.join(' ');
   const cmd = COMMANDS.find((c) => c.name === name);
-  if (!cmd) {
-    ctx.addBlock({
-      kind: 'slash_output',
-      text: `Unknown command: /${name}. Type /help for a list.`,
+  if (cmd) {
+    await cmd.execute(args, ctx);
+    return true;
+  }
+  // Skill fallback: enabled, user-invocable skills can be fired as /<name>.
+  const skill = ctx.skills.find((s) => s.name === name && s.userInvocable !== false);
+  if (skill && ctx.enabledSkillNames.has(skill.name)) {
+    ctx.sendUserPrompt(buildSkillInvocationMessage(skill, args), {
+      kind: 'skill_use',
+      skillName: skill.name,
+      args,
     });
     return true;
   }
-  await cmd.execute(args, ctx);
+  if (skill) {
+    ctx.addBlock({
+      kind: 'slash_output',
+      text: `Skill '${skill.name}' is disabled. Run /skills to enable it.`,
+    });
+    return true;
+  }
+  ctx.addBlock({
+    kind: 'slash_output',
+    text: `Unknown command: /${name}. Type /help for a list.`,
+  });
   return true;
 }
 
@@ -216,12 +297,17 @@ const MAX_VISIBLE = 8;
 export function SlashPopup({
   input,
   selectedIdx,
+  skills = [],
+  enabledSkillNames = new Set(),
 }: {
   input: string;
   selectedIdx: number;
+  skills?: Skill[];
+  enabledSkillNames?: Set<string>;
 }) {
   if (!isSlashPopupOpen(input)) return null;
-  const matches = matchCommands(getSlashQuery(input));
+  const matches = matchCommands(getSlashQuery(input), skills, enabledSkillNames);
+  const builtinNames = new Set(COMMANDS.map((c) => c.name));
   if (matches.length === 0) {
     return (
       <Box paddingX={1}>
@@ -239,12 +325,14 @@ export function SlashPopup({
       {visible.map((c, i) => {
         const selected = i === selectedIdx;
         const name = `/${c.name}`.padEnd(nameWidth + 1);
+        const isSkill = !builtinNames.has(c.name);
         return (
           <Text key={c.name}>
             <Text color={selected ? 'cyan' : undefined} bold={selected}>
               {name}
             </Text>
             <Text color="gray"> {c.description}</Text>
+            {isSkill && <Text color="gray"> [skill]</Text>}
           </Text>
         );
       })}
