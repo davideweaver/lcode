@@ -103,20 +103,32 @@ function BlockView({
         );
       }
       if (block.name === "Skill") {
-        // Render model-invoked Skill calls compactly — same look as a
-        // user-fired `/<name>` (see the `skill_use` case below). The full
-        // SKILL.md body is in the model's context as the tool result; we
-        // don't repeat it in the transcript.
+        // Two-state render: pending shows only the header line (with a
+        // blinking indicator) so the user sees the request fire; done flips
+        // to a solid `●` and adds the `Successfully loaded skill` sub-line.
+        // The full SKILL.md body is in the model's context as the tool
+        // result; we don't repeat it in the transcript.
         const skillName =
           typeof block.input.skill_name === "string" ? block.input.skill_name : "(unknown)";
         const argsStr = typeof block.input.args === "string" ? block.input.args : "";
         const summary = argsStr ? `${skillName}: ${argsStr}` : skillName;
+        const subLine =
+          block.status === "pending"
+            ? null
+            : block.status === "error"
+              ? `Failed to load skill${block.result ? `: ${firstLineShort(block.result)}` : ""}`
+              : "Successfully loaded skill";
         return (
-          <Box marginTop={1}>
+          <Box flexDirection="column" marginTop={1}>
             <Text color={color}>
               {indicator} <Text bold>Skill</Text>
               <Text color={MUTED}>({summary})</Text>
             </Text>
+            {subLine && (
+              <Box marginLeft={2}>
+                <Text color={MUTED}>└ {subLine}</Text>
+              </Box>
+            )}
           </Box>
         );
       }
@@ -213,16 +225,7 @@ function BlockView({
         </Box>
       );
     case "skill_use": {
-      const summary = block.args ? `${block.skillName}: ${block.args}` : block.skillName;
-      return (
-        <Box marginTop={1}>
-          <Text color="green">
-            <Text>● </Text>
-            <Text bold>Skill</Text>
-            <Text color={MUTED}>({summary})</Text>
-          </Text>
-        </Box>
-      );
+      return <SkillUseBlock skillName={block.skillName} args={block.args} />;
     }
     case "compaction": {
       const tierLabel = block.subtype === "tier1" ? "tier 1 — tool results truncated" : "tier 2 — summarized";
@@ -395,6 +398,36 @@ function summarizeMcpArgs(input: Record<string, unknown>): string {
     return entries.length === 1 ? json : `${k}: ${json}`;
   });
   return truncate(parts.join(", "), MCP_ARGS_MAX);
+}
+
+/**
+ * User-fired `/<skill-name>` block. The SKILL.md body is loaded synchronously
+ * by the slash dispatcher, so there's no real async work — but we still render
+ * a brief pending → done transition so the user gets visual feedback that the
+ * skill was injected into the prompt.
+ */
+function SkillUseBlock({ skillName, args }: { skillName: string; args: string }) {
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const id = setTimeout(() => setLoaded(true), 400);
+    return () => clearTimeout(id);
+  }, []);
+  const summary = args ? `${skillName}: ${args}` : skillName;
+  return (
+    <Box marginTop={1} flexDirection="column">
+      <Text color="green">
+        {loaded ? <Text color="green">●</Text> : <BlinkingDot color="green" />}
+        <Text> </Text>
+        <Text bold>Skill</Text>
+        <Text color={MUTED}>({summary})</Text>
+      </Text>
+      {loaded && (
+        <Box marginLeft={2}>
+          <Text color={MUTED}>└ Successfully loaded skill</Text>
+        </Box>
+      )}
+    </Box>
+  );
 }
 
 function BlinkingDot({ color }: { color?: string }) {
