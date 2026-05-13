@@ -1,5 +1,6 @@
 import { platform, release } from 'node:os';
 import type { Tool } from '../tools/types.js';
+import type { Skill } from '../skills/types.js';
 import { renderClaudeMdSection, type ClaudeMdFile } from './claudemd.js';
 import { defaultAgentFiles, type AgentFiles } from './agents.js';
 
@@ -12,6 +13,12 @@ export interface SystemPromptArgs {
   claudeMdFiles?: ClaudeMdFile[];
   /** Resolved agent-identity strings. Defaults to the built-in DEFAULT_*. */
   agentFiles?: AgentFiles;
+  /**
+   * Discovered + enabled skills to advertise. The list is rebuilt on every
+   * runLoop entry, so mid-session edits and enable/disable toggles take effect
+   * on the next user submission without restarting.
+   */
+  skills?: Skill[];
 }
 
 /**
@@ -28,6 +35,8 @@ export function buildSystemPrompt(args: SystemPromptArgs): string {
   sections.push(section('Capabilities', agent.capabilities));
   sections.push(buildEnvironment(args));
   sections.push(buildToolGuidance(args.tools));
+  const skillsSection = buildSkillsGuidance(args.skills);
+  if (skillsSection) sections.push(skillsSection);
   if (args.permissionMode === 'plan') sections.push(PLAN_MODE);
   sections.push(section('Instructions', agent.instructions));
 
@@ -70,6 +79,22 @@ function buildToolGuidance(tools: Tool[]): string {
     '- For the web: use **WebSearch** to find URLs, **WebFetch** to read a specific page. Do not guess URLs.',
     '- When you have everything you need, stop calling tools and answer the user.',
   );
+  return lines.join('\n');
+}
+
+function buildSkillsGuidance(skills: Skill[] | undefined): string {
+  if (!skills || skills.length === 0) return '';
+  const advertised = skills.filter((s) => !s.disableModelInvocation);
+  if (advertised.length === 0) return '';
+  const lines: string[] = [
+    '# Available Skills',
+    'Skills are reusable, named workflows. Invoke one by calling the `Skill` tool with `skill_name` (and optional `args`); the tool returns the skill\'s full instructions, which you then follow on subsequent turns. Invoke a skill only when the user\'s request clearly matches its description.',
+    '',
+  ];
+  for (const s of advertised) {
+    const blurb = s.whenToUse ? `${shorten(s.description)} ${shorten(s.whenToUse)}` : shorten(s.description);
+    lines.push(`- **${s.name}** — ${blurb}`);
+  }
   return lines.join('\n');
 }
 

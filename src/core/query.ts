@@ -5,6 +5,7 @@ import { newSessionState } from '../tools/types.js';
 import { BUILTIN_TOOLS } from '../tools/builtin/index.js';
 import { loadClaudeMdFiles, type ClaudeMdFile } from '../prompts/claudemd.js';
 import { loadAgentFiles, type AgentFiles } from '../prompts/agents.js';
+import type { Skill } from '../skills/types.js';
 import { loadMcpServers } from '../mcp/config.js';
 import { McpManager } from '../mcp/manager.js';
 import type { McpServerConfig } from '../mcp/types.js';
@@ -76,6 +77,13 @@ export interface QueryOptions {
    * `~/.lcode/*.md` files. Pass an explicit value to skip file IO.
    */
   agentFiles?: AgentFiles;
+  /**
+   * Enabled skills the model is allowed to auto-invoke (and that are
+   * advertised in the system prompt). Caller is responsible for filtering
+   * the full discovered skill list down to the enabled set. Empty / undefined
+   * means no `Skill` tool and no "Available Skills" section.
+   */
+  skills?: Skill[];
 }
 
 const DEFAULT_MAX_TURNS = 50;
@@ -152,6 +160,7 @@ export async function* query(options: QueryOptions): AsyncGenerator<SDKMessage> 
     sessionState: replayedSessionState,
     claudeMdFiles,
     agentFiles,
+    skills: options.skills,
     searxngUrl: config.searxngUrl,
     contextWindow: config.contextWindow,
     compactThreshold: config.compactThreshold,

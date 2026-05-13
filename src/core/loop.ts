@@ -21,6 +21,8 @@ import { ToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt } from '../prompts/system.js';
 import type { ClaudeMdFile } from '../prompts/claudemd.js';
 import type { AgentFiles } from '../prompts/agents.js';
+import type { Skill } from '../skills/types.js';
+import { makeSkillTool } from '../tools/builtin/skill.js';
 
 export interface LoopArgs {
   sessionId: string;
@@ -46,6 +48,13 @@ export interface LoopArgs {
   claudeMdFiles?: ClaudeMdFile[];
   /** Resolved agent-identity strings (persona/human/capabilities/instructions). */
   agentFiles?: AgentFiles;
+  /**
+   * Enabled skills advertised to the model and reachable via the `Skill` tool.
+   * The list is consumed once at runLoop entry — the system prompt's
+   * "Available Skills" section is built from it and the `Skill` tool is
+   * registered with this exact list.
+   */
+  skills?: Skill[];
   /** Surfaced into ToolContext for WebSearch. */
   searxngUrl?: string;
   /** Window size for the compaction threshold. Falls back to a no-op large value when omitted. */
@@ -61,7 +70,15 @@ export interface LoopArgs {
 export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
   const startedAt = Date.now();
   const registry = new ToolRegistry();
-  const enabledTools = filterToolsForMode(args.tools, args.permissionMode);
+  const baseTools = args.tools.slice();
+  // Skill tool is built per-call so its bound name map matches the exact
+  // enabled list this turn sees. Skipped when no skills are enabled so the
+  // model isn't even aware of the tool's name.
+  if (args.skills && args.skills.length > 0) {
+    const invocable = args.skills.filter((s) => !s.disableModelInvocation);
+    if (invocable.length > 0) baseTools.push(makeSkillTool(invocable));
+  }
+  const enabledTools = filterToolsForMode(baseTools, args.permissionMode);
   registry.registerAll(enabledTools);
 
   const init: SDKSystemInitMessage = {
@@ -87,6 +104,7 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
           permissionMode: args.permissionMode,
           claudeMdFiles: args.claudeMdFiles,
           agentFiles: args.agentFiles,
+          skills: args.skills,
         });
 
   // Compaction overhead — system prompt + tool schemas. Computed once
