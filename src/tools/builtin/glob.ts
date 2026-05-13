@@ -19,11 +19,17 @@ export const GlobTool = tool(
     'Returns up to 1000 paths sorted by modification time, most recent first.',
   schema,
   async (input, ctx) => {
-    const root = input.path ?? ctx.cwd;
+    let root = input.path ?? ctx.cwd;
+    let pattern = input.pattern;
+    if (isAbsolute(pattern)) {
+      const split = splitAbsoluteGlob(pattern);
+      root = split.dir;
+      pattern = split.glob;
+    }
     if (!isAbsolute(root)) {
       return { content: `Error: path must be absolute. Got: ${root}`, isError: true };
     }
-    const matcher = compileGlob(input.pattern);
+    const matcher = compileGlob(pattern);
     const matches: { path: string; mtime: number }[] = [];
     try {
       await walk(root, root, matcher, matches, ctx.signal);
@@ -51,6 +57,22 @@ export const GlobTool = tool(
 );
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.turbo', '.cache']);
+
+function splitAbsoluteGlob(absPattern: string): { dir: string; glob: string } {
+  const parts = absPattern.split('/');
+  const idx = parts.findIndex((p) => /[*?[]/.test(p));
+  if (idx === -1) {
+    const lastSlash = absPattern.lastIndexOf('/');
+    return {
+      dir: absPattern.slice(0, lastSlash) || '/',
+      glob: absPattern.slice(lastSlash + 1),
+    };
+  }
+  return {
+    dir: parts.slice(0, idx).join('/') || '/',
+    glob: parts.slice(idx).join('/'),
+  };
+}
 
 async function walk(
   rootAbs: string,
