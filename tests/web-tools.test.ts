@@ -76,7 +76,8 @@ describe('WebFetch', () => {
       mkCtx({ runCompletion }),
     );
     expect(result.isError).toBeFalsy();
-    expect(result.content).toBe('the answer');
+    expect(result.content).toMatch(/^\[lcode-fetch\] status=200 statusText=OK bytes=\d+\n/);
+    expect(result.content).toContain('the answer');
     expect(runCompletion).toHaveBeenCalledTimes(1);
     const call = runCompletion.mock.calls[0]![0]!;
     expect(call.userPrompt).toContain('Title');
