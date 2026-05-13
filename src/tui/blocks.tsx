@@ -91,20 +91,15 @@ function BlockView({
         block.status === "pending" ? <BlinkingDot color={color} /> : <Text color={color}>●</Text>;
       const mcp = parseMcpName(block.name);
       if (mcp) {
-        const argsSummary = summarizeInput(block.input);
         return (
-          <Box flexDirection="column" marginTop={1}>
-            <Text color={color}>
-              {indicator} Calling <Text bold>{mcp.server}</Text>
-              <Text color={MUTED}> · {mcp.tool}{argsSummary ? `(${argsSummary})` : ""}</Text>
-            </Text>
-            {block.status !== "pending" && (
-              <McpToolOutput
-                result={block.result ?? ""}
-                expanded={showThinking}
-              />
-            )}
-          </Box>
+          <McpToolBlock
+            server={mcp.server}
+            tool={mcp.tool}
+            status={block.status}
+            input={block.input}
+            result={block.result ?? ""}
+            expanded={showThinking}
+          />
         );
       }
       if (block.name === "Skill") {
@@ -313,59 +308,103 @@ function ToolOutputBody({
 }
 
 /**
- * Compact one-liner output for MCP tool calls. Newlines and whitespace are
- * collapsed so a single quote-delimited preview wraps to the terminal
- * naturally; long results get truncated with the ctrl+o hint.
+ * Mimics Claude Code's MCP tool-call display:
+ *   pending →  `● Calling <server>:<tool>… (ctrl+o to expand)`
+ *              `  └ "<args>"`
+ *   done    →  `Called <server>:<tool> (ctrl+o to expand)`
+ *              (full args + result revealed when expanded)
  */
-const MCP_PREVIEW_CHARS = 240;
-
-function McpToolOutput({
+function McpToolBlock({
+  server,
+  tool,
+  status,
+  input,
   result,
   expanded,
 }: {
+  server: string;
+  tool: string;
+  status: "pending" | "done" | "error";
+  input: Record<string, unknown>;
   result: string;
   expanded: boolean;
 }) {
-  const flat = result.replace(/\s+/g, " ").trim();
-  if (flat === "") {
+  const fqn = `${server}:${tool}`;
+  const argsSummary = summarizeMcpArgs(input);
+  const hint = <Text color={MUTED}> (ctrl+o to expand)</Text>;
+
+  if (status === "pending") {
     return (
-      <Box marginLeft={2}>
-        <Text color={MUTED}>└ (no output)</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Text>
+          <BlinkingDot color="" /> Calling {fqn}…{hint}
+        </Text>
+        {argsSummary && (
+          <Box marginLeft={2}>
+            <Text color={MUTED}>└ {argsSummary}</Text>
+          </Box>
+        )}
       </Box>
     );
   }
-  if (expanded) {
-    return (
-      <Box flexDirection="column" marginLeft={2}>
-        {result.split("\n").map((line, i) => (
-          <Text key={i} color={MUTED}>
-            {line || " "}
-          </Text>
-        ))}
-      </Box>
-    );
-  }
-  const truncated = flat.length > MCP_PREVIEW_CHARS;
-  const preview = truncated ? flat.slice(0, MCP_PREVIEW_CHARS - 1) + "…" : flat;
+
+  const failed = status === "error";
+  const dotColor = failed ? "red" : "green";
+  const verb = failed ? "Failed" : "Called";
   return (
-    <Box marginLeft={2} flexDirection="column">
-      <Text color={MUTED}>
-        └ &quot;{preview}&quot;
+    <Box flexDirection="column" marginTop={1}>
+      <Text>
+        <Text color={dotColor}>●</Text> {verb} {fqn}
+        {hint}
       </Text>
-      {truncated && (
-        <Text color={MUTED}>  (ctrl+o to expand)</Text>
+      {expanded && (
+        <Box flexDirection="column" marginLeft={2}>
+          {argsSummary && <Text color={MUTED}>└ {argsSummary}</Text>}
+          {result.trim() !== "" &&
+            result.split("\n").map((line, i) => (
+              <Text key={i} color={MUTED}>
+                {line || " "}
+              </Text>
+            ))}
+        </Box>
       )}
     </Box>
   );
 }
 
-function BlinkingDot({ color }: { color: string }) {
+/**
+ * Compact arg preview for MCP calls. Single-string args become `"value"`;
+ * multi-arg calls become `"a", "b"` (or `key=value` when scalars need
+ * disambiguating). Total length is capped so the line stays one-screen.
+ */
+const MCP_ARGS_MAX = 200;
+
+function summarizeMcpArgs(input: Record<string, unknown>): string {
+  const entries = Object.entries(input);
+  if (entries.length === 0) return "";
+  const parts = entries.map(([k, v]) => {
+    if (typeof v === "string") {
+      const rel = relativizeCwd(v);
+      const clipped = rel.length > 80 ? rel.slice(0, 79) + "…" : rel;
+      return entries.length === 1 ? `"${clipped}"` : `${k}: "${clipped}"`;
+    }
+    if (typeof v === "number" || typeof v === "boolean") {
+      return entries.length === 1 ? String(v) : `${k}: ${v}`;
+    }
+    const json = truncate(relativizeCwd(JSON.stringify(v) ?? ""), 60);
+    return entries.length === 1 ? json : `${k}: ${json}`;
+  });
+  return truncate(parts.join(", "), MCP_ARGS_MAX);
+}
+
+function BlinkingDot({ color }: { color?: string }) {
   const [on, setOn] = useState(true);
   useEffect(() => {
     const id = setInterval(() => setOn((v) => !v), 500);
     return () => clearInterval(id);
   }, []);
-  return on ? <Text color={color}>●</Text> : <Text> </Text>;
+  if (!on) return <Text> </Text>;
+  return color ? <Text color={color}>●</Text> : <Text>●</Text>;
 }
 
 function WebFetchOutput({
