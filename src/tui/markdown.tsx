@@ -1,4 +1,4 @@
-import { Box, Text } from 'ink';
+import { Box, Text, useStdout } from 'ink';
 import type { ReactNode } from 'react';
 
 type InlineSpan =
@@ -243,6 +243,31 @@ export function MarkdownText({ children }: { children: string }) {
       continue;
     }
 
+    // Horizontal rule: a line with only `-`, `*`, or `_` (>=3 of one kind,
+    // optionally separated by spaces). Must not contain `|` so we don't
+    // swallow a table separator row.
+    if (!line.includes('|') && isHorizontalRule(line)) {
+      elements.push(<MdDivider key={`hr-${elements.length}`} />);
+      i++;
+      continue;
+    }
+
+    // GFM-style table: header row, then a separator row of `---`/`:---`/
+    // `---:`/`:---:` cells, then zero or more data rows.
+    const tbl = parseTable(lines, i);
+    if (tbl) {
+      elements.push(
+        <MdTable
+          key={`tbl-${elements.length}`}
+          header={tbl.header}
+          rows={tbl.rows}
+          aligns={tbl.aligns}
+        />,
+      );
+      i = tbl.end;
+      continue;
+    }
+
     // Unordered list: leading whitespace + (* | - | +) + space(s) + content
     const ul = line.match(/^(\s*)([*+\-])\s+(.*)$/);
     if (ul) {
@@ -364,6 +389,204 @@ export function replaceLatexMath(s: string): string {
   out = stripDelimited(out, /\\\(([\s\S]*?)\\\)/g);
   out = stripDelimited(out, /\\\[([\s\S]*?)\\\]/g);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Horizontal rule
+// ---------------------------------------------------------------------------
+
+/**
+ * A markdown horizontal rule is a line containing only `-`, `*`, or `_`
+ * characters (at least 3 of a single kind), optionally separated by spaces.
+ * Callers must guard against `|` themselves to avoid swallowing table
+ * separator rows like `|---|---|`.
+ */
+export function isHorizontalRule(line: string): boolean {
+  const t = line.trim();
+  if (t.length < 3) return false;
+  if (!/^[-*_\s]+$/.test(t)) return false;
+  const compact = t.replace(/\s+/g, '');
+  if (compact.length < 3) return false;
+  return /^-+$/.test(compact) || /^\*+$/.test(compact) || /^_+$/.test(compact);
+}
+
+function MdDivider() {
+  const { stdout } = useStdout();
+  const width = Math.max(8, (stdout?.columns ?? 80) - 4);
+  return (
+    <Box marginY={0}>
+      <Text dimColor>{'─'.repeat(width)}</Text>
+    </Box>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+type Align = 'left' | 'right' | 'center';
+
+export interface ParsedTable {
+  header: string[];
+  rows: string[][];
+  aligns: Align[];
+  end: number;
+}
+
+/**
+ * Try to parse a GFM-style table starting at `lines[start]`. Returns the
+ * parsed table and the index of the first non-table line, or null if the
+ * lines don't form a valid table.
+ */
+export function parseTable(lines: string[], start: number): ParsedTable | null {
+  const headerLine = lines[start] ?? '';
+  if (!headerLine.includes('|')) return null;
+  const sepLine = lines[start + 1] ?? '';
+  if (!isTableSeparator(sepLine)) return null;
+
+  const header = splitTableRow(headerLine);
+  if (header.length === 0) return null;
+  const aligns = splitTableRow(sepLine).map(parseAlign);
+  while (aligns.length < header.length) aligns.push('left');
+
+  const rows: string[][] = [];
+  let i = start + 2;
+  while (i < lines.length) {
+    const ln = lines[i] ?? '';
+    if (!ln.includes('|')) break;
+    if (isTableSeparator(ln)) break;
+    if (ln.trim() === '') break;
+    rows.push(splitTableRow(ln));
+    i++;
+  }
+
+  return { header, rows, aligns, end: i };
+}
+
+function splitTableRow(line: string): string[] {
+  let s = line.trim();
+  if (s.startsWith('|')) s = s.slice(1);
+  if (s.endsWith('|')) s = s.slice(0, -1);
+  return s.split('|').map((c) => c.trim());
+}
+
+function isTableSeparator(line: string): boolean {
+  if (!line.includes('|')) return false;
+  const cells = splitTableRow(line);
+  if (cells.length === 0) return false;
+  return cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+
+function parseAlign(sep: string): Align {
+  const t = sep.trim();
+  const left = t.startsWith(':');
+  const right = t.endsWith(':');
+  if (left && right) return 'center';
+  if (right) return 'right';
+  return 'left';
+}
+
+/**
+ * Visible width of a cell as it will render on screen — strips markdown
+ * markers we won't actually print (`*`, `` ` ``, `[text](url)` syntax).
+ * Used to compute column widths so cells line up after inline formatting.
+ */
+function visibleCellWidth(s: string): number {
+  return s
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*+/g, '')
+    .replace(/`/g, '')
+    .length;
+}
+
+function MdTable({
+  header,
+  rows,
+  aligns,
+}: {
+  header: string[];
+  rows: string[][];
+  aligns: Align[];
+}) {
+  const cols = header.length;
+  const widths: number[] = [];
+  for (let c = 0; c < cols; c++) {
+    let max = visibleCellWidth(header[c] ?? '');
+    for (const row of rows) max = Math.max(max, visibleCellWidth(row[c] ?? ''));
+    widths[c] = max;
+  }
+
+  const sepSegments = widths.map((w) => '─'.repeat(w + 2));
+  const separator = sepSegments.join('┼');
+
+  return (
+    <Box flexDirection="column" marginY={0}>
+      <TableRow cells={header} widths={widths} aligns={aligns} bold />
+      <Text color="gray">{separator}</Text>
+      {rows.map((row, idx) => (
+        <TableRow key={idx} cells={row} widths={widths} aligns={aligns} />
+      ))}
+    </Box>
+  );
+}
+
+function TableRow({
+  cells,
+  widths,
+  aligns,
+  bold,
+}: {
+  cells: string[];
+  widths: number[];
+  aligns: Align[];
+  bold?: boolean;
+}) {
+  return (
+    <Box>
+      {widths.map((w, i) => (
+        <Box key={i}>
+          {i === 0 ? <Text>{' '}</Text> : <Text color="gray">{' │ '}</Text>}
+          <PaddedCell
+            text={cells[i] ?? ''}
+            width={w}
+            align={aligns[i] ?? 'left'}
+            bold={bold}
+          />
+          {i === widths.length - 1 ? <Text>{' '}</Text> : null}
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+function PaddedCell({
+  text,
+  width,
+  align,
+  bold,
+}: {
+  text: string;
+  width: number;
+  align: Align;
+  bold?: boolean;
+}) {
+  const vw = visibleCellWidth(text);
+  const pad = Math.max(0, width - vw);
+  let leftPad = '';
+  let rightPad = '';
+  if (align === 'right') leftPad = ' '.repeat(pad);
+  else if (align === 'center') {
+    leftPad = ' '.repeat(Math.floor(pad / 2));
+    rightPad = ' '.repeat(Math.ceil(pad / 2));
+  } else rightPad = ' '.repeat(pad);
+
+  return (
+    <Text bold={bold}>
+      {leftPad}
+      <InlineLine text={text} />
+      {rightPad}
+    </Text>
+  );
 }
 
 function _normalizeUnicodeLookalikes(s: string): string {
