@@ -116,6 +116,7 @@ export type ResultSubtype =
   | 'error_max_turns'
   | 'error_aborted'
   | 'error_tool_failure'
+  | 'error_repetition'
   | 'error_llm';
 
 export interface SDKResultMessage {

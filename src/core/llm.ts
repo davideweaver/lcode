@@ -10,6 +10,29 @@ import type { Tool } from '../tools/types.js';
 import { ThinkingStreamParser } from './thinking-parser.js';
 import { HarmonyNoiseFilter } from './harmony-filter.js';
 import { ImageCacheMissError, resolveImageBlock } from './image-cache.js';
+import { RepetitionMonitor } from './repetition.js';
+import { debugLog, isDebugEnabled } from './debug-log.js';
+
+/**
+ * Thrown by streamLlm when the model has been emitting verbatim-repeating
+ * content for >= the configured number of cycles. Local models occasionally
+ * collapse into this state and would otherwise burn until max_tokens.
+ * The loop catches this and reports it as `error_repetition` so the user
+ * sees a meaningful explanation instead of a generic "request failed".
+ */
+export class RepetitionError extends Error {
+  readonly period: number;
+  readonly cycles: number;
+  constructor(period: number, cycles: number) {
+    super(
+      `Aborted: model is repeating a ${period}-character block ${cycles} times. ` +
+        `This usually means the model got stuck and will not recover.`,
+    );
+    this.name = 'RepetitionError';
+    this.period = period;
+    this.cycles = cycles;
+  }
+}
 
 export interface LlmStreamArgs {
   baseUrl: string;
@@ -128,6 +151,21 @@ export async function* streamLlm(
   const toolCalls = new Map<number, OpenAIToolCallAccum>();
   let stopReason: LlmFinalMessage['stop_reason'] = null;
   let usage: Usage | undefined;
+  // Single monitor for both thinking and text deltas — runaway repetition
+  // looks the same in either channel and we want to catch it whichever
+  // stream the model is currently emitting on.
+  const repetition = new RepetitionMonitor();
+  const checkRepetition = (kind: string, chunk: string): void => {
+    repetition.feed(chunk);
+    const hit = repetition.check();
+    if (hit) {
+      debugLog('repetition_detected', { kind, period: hit.period, cycles: hit.cycles });
+      throw new RepetitionError(hit.period, hit.cycles);
+    }
+  };
+  const streamStart = Date.now();
+  let totalChars = 0;
+  let lastLogMs = streamStart;
 
   for await (const chunk of parseSseChunks(res.body, args.signal)) {
     const choice = chunk.choices?.[0];
@@ -151,7 +189,9 @@ export async function* streamLlm(
         yield { kind: 'thinking_start' };
       }
       currentThinking = (currentThinking ?? '') + delta.reasoning_content;
+      totalChars += delta.reasoning_content.length;
       yield { kind: 'thinking_delta', text: delta.reasoning_content };
+      checkRepetition('reasoning', delta.reasoning_content);
     }
 
     // 2. content arriving while reasoning channel is open ⇒ reasoning ended.
@@ -172,19 +212,38 @@ export async function* streamLlm(
         for (const ev of parser.feed(cleaned)) {
           if (ev.kind === 'text_delta') {
             textAccum += ev.text;
+            totalChars += ev.text.length;
             yield ev;
+            checkRepetition('text', ev.text);
           } else if (ev.kind === 'thinking_start') {
             currentThinking = '';
             yield ev;
           } else if (ev.kind === 'thinking_delta') {
             if (currentThinking !== null) currentThinking += ev.text;
+            totalChars += ev.text.length;
             yield ev;
+            checkRepetition('thinking', ev.text);
           } else if (ev.kind === 'thinking_stop') {
             if (currentThinking !== null) thinkingBlocks.push(currentThinking);
             currentThinking = null;
             yield ev;
           }
         }
+      }
+    }
+
+    // Periodic stream telemetry (debug-gated). Helpful for diagnosing
+    // input-dropping bugs: correlating "typing dead at T" with stream rate
+    // tells us whether the UI is choking on a render flood.
+    if (isDebugEnabled()) {
+      const now = Date.now();
+      if (now - lastLogMs >= 1000) {
+        debugLog('stream_rate', {
+          elapsed_ms: now - streamStart,
+          total_chars: totalChars,
+          chars_per_sec: Math.round((totalChars / Math.max(1, now - streamStart)) * 1000),
+        });
+        lastLogMs = now;
       }
     }
     if (delta?.tool_calls) {

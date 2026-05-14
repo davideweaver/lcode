@@ -11,7 +11,8 @@ import type {
   ToolUseBlock,
 } from './messages.js';
 import { textBlock, toolResultBlock } from './messages.js';
-import { runCompletion, streamLlm, toOpenAITools, type LlmFinalMessage } from './llm.js';
+import { RepetitionError, runCompletion, streamLlm, toOpenAITools, type LlmFinalMessage } from './llm.js';
+import { debugLog } from './debug-log.js';
 import { compact } from './compactor.js';
 import { runSubagent } from './agent.js';
 import { newSessionId } from './session.js';
@@ -138,6 +139,17 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
   let numTurns = 0;
   let usageTotal = { input_tokens: 0, output_tokens: 0 };
 
+  // Turn-level tool-loop detector. Local models occasionally pick a single
+  // tool call (e.g. an Edit whose `old_string` doesn't match anywhere) and
+  // retry it verbatim for dozens of turns. The streamed-content repetition
+  // monitor doesn't catch this because the *thinking* between attempts is
+  // different — only the tool call itself repeats. Window of the last 3
+  // turns' (sorted tool fingerprints, all-failed flag); abort when all
+  // three match each other and all calls failed.
+  type ToolTurnFingerprint = { fp: string; allErrored: boolean };
+  const recentToolTurns: ToolTurnFingerprint[] = [];
+  const STUCK_TURN_THRESHOLD = 3;
+
   for (;;) {
     if (args.signal.aborted) {
       yield buildResult({
@@ -218,9 +230,14 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      const subtype: SDKResultMessage['subtype'] = args.signal.aborted
+        ? 'error_aborted'
+        : err instanceof RepetitionError
+          ? 'error_repetition'
+          : 'error_llm';
       yield buildResult({
         sessionId: args.sessionId,
-        subtype: args.signal.aborted ? 'error_aborted' : 'error_llm',
+        subtype,
         startedAt,
         numTurns,
         usage: usageTotal,
@@ -383,7 +400,36 @@ export async function* runLoop(args: LoopArgs): AsyncGenerator<SDKMessage> {
       message: { role: 'user', content: toolResults },
     };
     history.push({ role: 'user', content: toolResults });
+
+    const fp = fingerprintToolCalls(toolUses);
+    const allErrored = toolResults.every((r) => r.is_error === true);
+    recentToolTurns.push({ fp, allErrored });
+    if (recentToolTurns.length > STUCK_TURN_THRESHOLD) recentToolTurns.shift();
+    if (
+      recentToolTurns.length === STUCK_TURN_THRESHOLD &&
+      recentToolTurns.every((t) => t.allErrored && t.fp === fp)
+    ) {
+      debugLog('tool_loop_detected', { fingerprint: fp, turns: STUCK_TURN_THRESHOLD });
+      yield buildResult({
+        sessionId: args.sessionId,
+        subtype: 'error_repetition',
+        startedAt,
+        numTurns,
+        usage: usageTotal,
+        error:
+          `Aborted: model called the same tool with the same arguments ${STUCK_TURN_THRESHOLD} ` +
+          `turns in a row and every call failed. This usually means the model got stuck and will not recover.`,
+      });
+      return;
+    }
   }
+}
+
+export function fingerprintToolCalls(uses: ToolUseBlock[]): string {
+  const sorted = [...uses].sort((a, b) =>
+    a.name === b.name ? 0 : a.name < b.name ? -1 : 1,
+  );
+  return JSON.stringify(sorted.map((u) => ({ name: u.name, input: u.input })));
 }
 
 async function* streamWithPartials(

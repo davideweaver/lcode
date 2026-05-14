@@ -43,6 +43,7 @@ import { findProjectRoot, loadSkills } from '../skills/loader.js';
 import { loadEnabled, setEnabled } from '../skills/enabled.js';
 import type { Skill } from '../skills/types.js';
 import { SkillsPicker } from './skills-picker.js';
+import { debugLog, debugLogPath, isDebugEnabled } from '../core/debug-log.js';
 
 type HeaderItem = { kind: 'banner'; health: HealthResult };
 
@@ -492,10 +493,101 @@ export function App({ config, resume, skipAgentFiles, skipMcp, overrideSystemPro
     abortRef.current?.abort();
   }, []);
 
+  // Mirror `busy` and `cancelTurn` into refs so the long-lived stdin
+  // safety-net listener (installed once on mount) always reads the current
+  // values without needing to be re-registered on every state change.
+  const busyRef = useRef(false);
+  busyRef.current = turnStatus.kind === 'working';
+  const cancelTurnRef = useRef(cancelTurn);
+  cancelTurnRef.current = cancelTurn;
+
+  // Low-level stdin tap. Two jobs:
+  //   1. Diagnostic logging (gated by LCODE_DEBUG): every data chunk gets
+  //      a byte-count + hex preview written to ~/.lcode/debug/lcode-<pid>.log
+  //      so we can tell, the next time the UI feels frozen, whether bytes
+  //      are arriving at the process at all.
+  //   2. Cancellation safety net: scan each chunk for Ctrl+C (0x03) and
+  //      bare ESC (0x1B not followed by `[` or `O`). When `busy` and we
+  //      see one, fire `cancelTurn()` directly — bypassing Ink's keypress
+  //      pipeline entirely. Ink's existing useInput handler still does the
+  //      same job in normal conditions; this is the redundant path that
+  //      survives even if Ink stops dispatching keypress events under heavy
+  //      stream load.
+  useEffect(() => {
+    const stdin = process.stdin;
+    if (!stdin.isTTY) return;
+    if (isDebugEnabled()) {
+      const path = debugLogPath();
+      // Render to scrollback so the user knows where the log went without
+      // having to dig through env-var docs.
+      process.stderr.write(`[lcode] debug log: ${path}\n`);
+    }
+    const handler = (data: Buffer | string) => {
+      // stdin emits Buffer by default but switches to string once any
+      // listener has called setEncoding (Ink's keypress parser does this
+      // on some paths). Normalize to Buffer so the byte-level scan below
+      // works regardless of which form arrived.
+      const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+      if (isDebugEnabled()) {
+        const preview = buf.subarray(0, Math.min(16, buf.length)).toString('hex');
+        debugLog('stdin', { bytes: buf.length, preview, busy: busyRef.current });
+      }
+      if (!busyRef.current) return;
+      // Ctrl+C: byte 0x03 anywhere in the chunk.
+      if (buf.includes(0x03)) {
+        debugLog('cancel_via_stdin_tap', { trigger: 'ctrl_c' });
+        cancelTurnRef.current();
+        return;
+      }
+      // Bare ESC: a 0x1B that is NOT followed by `[` (CSI) or `O` (SS3).
+      // Single-byte chunks of just \x1b also count.
+      for (let i = 0; i < buf.length; i++) {
+        if (buf[i] !== 0x1b) continue;
+        const next = i + 1 < buf.length ? buf[i + 1] : -1;
+        if (next === 0x5b || next === 0x4f) continue; // `[` or `O`
+        debugLog('cancel_via_stdin_tap', { trigger: 'escape' });
+        cancelTurnRef.current();
+        return;
+      }
+    };
+    stdin.on('data', handler);
+    return () => {
+      stdin.off('data', handler);
+    };
+  }, []);
+
+  // Render-rate telemetry (debug-only). A render-storm hypothesis for the
+  // input-dropping bug predicts very high render counts during long
+  // streams; logging the count + timestamp lets us correlate stuck typing
+  // with render frequency from the next repro.
+  const renderCountRef = useRef(0);
+  const lastRenderLogRef = useRef(0);
+  if (isDebugEnabled()) {
+    renderCountRef.current += 1;
+    const now = Date.now();
+    if (now - lastRenderLogRef.current >= 1000) {
+      debugLog('render', {
+        count: renderCountRef.current,
+        busy: turnStatus.kind === 'working',
+      });
+      renderCountRef.current = 0;
+      lastRenderLogRef.current = now;
+    }
+  }
+
   const lastEscRef = useRef<number>(0);
   const lastCtrlCRef = useRef<number>(0);
   useInput(
     (inputChar, key) => {
+      if (isDebugEnabled()) {
+        debugLog('ink_input', {
+          char: inputChar.length <= 4 ? inputChar : `${inputChar.slice(0, 4)}…`,
+          esc: key.escape,
+          ctrl: key.ctrl,
+          ret: key.return,
+          busy: busyRef.current,
+        });
+      }
       // MultilineInput consumed a Shift/Alt+Enter byte sequence — drop the
       // residual events Ink dispatched for the same chunk so we don't, e.g.,
       // double-tap-clear on the leading ESC.
@@ -1071,6 +1163,14 @@ async function drainStream(
         break;
       }
       case 'result':
+        // Errors thrown mid-stream (repetition, LLM failure) leave the
+        // streaming thinking/text blocks in a perpetual "Thinking..." state
+        // because we never reached the natural thinking_stop / assistant
+        // events. Finalize them so the user sees "Thought for Ns" instead
+        // of an animated header that never resolves.
+        if (msg.subtype !== 'success') {
+          setBlocks((b) => finalizeStreamingThinking(finalizeStreamingText(b)));
+        }
         // User-initiated cancellation surfaces as the "Interrupted" status
         // line; skip the redundant error block.
         if (msg.subtype === 'error_aborted') break;
