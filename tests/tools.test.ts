@@ -87,29 +87,15 @@ describe('Edit "Read first" rule', () => {
 });
 
 describe('Write "Read first when exists" rule', () => {
-  it('refuses first overwrite, inlines existing contents, leaves file untouched', async () => {
+  it('refuses overwrite without a prior Read and leaves file untouched', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'lcode-'));
     const path = join(dir, 'a.txt');
     await writeFile(path, 'line one\nline two\n');
     const ctx = mkCtx(dir);
     const result = await WriteTool.handler({ file_path: path, content: 'new' }, ctx);
     expect(result.isError).toBe(true);
-    expect(result.content).toContain('     1\tline one');
-    expect(result.content).toContain('     2\tline two');
-    // file on disk must not have been overwritten yet
+    expect(result.content).toContain('must Read');
     expect(await readFile(path, 'utf8')).toBe('line one\nline two\n');
-  });
-
-  it('commits on the second Write after the preview-error', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'lcode-'));
-    const path = join(dir, 'a.txt');
-    await writeFile(path, 'old');
-    const ctx = mkCtx(dir);
-    const first = await WriteTool.handler({ file_path: path, content: 'new' }, ctx);
-    expect(first.isError).toBe(true);
-    const second = await WriteTool.handler({ file_path: path, content: 'new' }, ctx);
-    expect(second.isError).toBeFalsy();
-    expect(await readFile(path, 'utf8')).toBe('new');
   });
 
   it('allows create for new file without Read', async () => {
@@ -121,7 +107,7 @@ describe('Write "Read first when exists" rule', () => {
     expect(await readFile(path, 'utf8')).toBe('fresh');
   });
 
-  it('honors a prior explicit Read (one-call overwrite)', async () => {
+  it('overwrites after a prior Read', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'lcode-'));
     const path = join(dir, 'a.txt');
     await writeFile(path, 'old');
